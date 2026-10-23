@@ -8,9 +8,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const JWT_SECRET = process.env.JWT_SECRET || 'barazani-secret-change-me-2024';
+const JWT_SECRET = process.env.JWT_SECRET || 'mon_amour_et_mon_coeur_grace_mihigo';
 const PORT = process.env.PORT || 10000;
-const DATA_FILE = path.join(__dirname, 'data.json');
+const DATA_FILE = path(__dirname, 'data.json');
 
 let db = {
   users: [],
@@ -49,10 +49,10 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(path.join(__dirname,'public')));
+app.use(express.static(__dirname,'index.html')));
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public'));
+  res.sendFile(__dirname, 'data file'));
 });
 
 const server = http.createServer(app);
