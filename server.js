@@ -1,6 +1,5 @@
-// BARAZANI Online ;
-const app = $('#app');
-let S = {
+// BARAZANI Online-backend serveur (Express+WebSocket+JSON store);
+const app = Express();
   token: localStorage.getItem('bz_token') || '',
   user: null,
   view: 'auth',
