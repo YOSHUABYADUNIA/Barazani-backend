@@ -72,7 +72,7 @@ const app = express();
 app.use(express.json({ limit: '20mb' }));
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'style.css'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 const server = http.createServer(app);
