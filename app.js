@@ -44,7 +44,6 @@ function connectWs() {
     } else if (d.type === 'message' || d.type === 'friend-request' || d.type === 'friend-accepted') {
       loadFriends();
     }
-
     if (d.type === 'friend-request' || d.type === 'friend-accepted' || d.type === 'message') {
       if (S.user && S.tab === 'baraza') loadFeed();
     }
@@ -61,10 +60,18 @@ async function loadFriends() {
 
 async function loadFeed() {
   if (!S.user) {
-    S.feed = await api('/feed/public');
+    try {
+      S.feed = await api('/feed/public');
+    } catch {
+      S.feed = [];
+    }
     return S.feed;
   }
-  S.feed = await api('/feed');
+  try {
+    S.feed = await api('/feed');
+  } catch {
+    S.feed = [];
+  }
   return S.feed;
 }
 
@@ -105,7 +112,7 @@ window.openPublicBaraza = async () => {
   try {
     const feed = await loadFeed();
     renderPublicBaraza(feed);
-  } catch (e) {
+  } catch {
     renderPublicBaraza([]);
   }
 };
@@ -158,6 +165,10 @@ function renderMain() {
   if (!S.user) return renderAuth();
   S.view = 'main';
   const reqBadge = S.requests.length ? `<span class="badge">${S.requests.length}</span>` : '';
+  const adminBtn = S.user.role === 'admin'
+    ? `<button class="${S.tab === 'admin' ? 'active' : ''}" onclick="switchTab('admin')"><span class="ic">🛡️</span>Admin</button>`
+    : '';
+
   app.innerHTML = `
     <div class="header">
       <h2>${S.tab === 'baraza' ? 'BARAZA' : S.tab === 'chats' ? 'Discussions' : S.tab === 'search' ? 'Rechercher' : S.tab === 'profile' ? 'Mon profil' : 'Administration'}</h2>
@@ -169,7 +180,7 @@ function renderMain() {
       <button class="${S.tab === 'chats' ? 'active' : ''}" onclick="switchTab('chats')"><span class="ic">💬</span>Amis${reqBadge}</button>
       <button class="${S.tab === 'search' ? 'active' : ''}" onclick="switchTab('search')"><span class="ic">🔍</span>Recherche</button>
       <button class="${S.tab === 'profile' ? 'active' : ''}" onclick="switchTab('profile')"><span class="ic">👤</span>Profil</button>
-      ${S.user.role === 'admin' ? '<button class="' + (S.tab === 'admin' ? 'active' : '') + '" onclick="switchTab(\'admin\')"><span class="ic">🛡️</span>Admin</button>' : ''}
+      ${adminBtn}
     </div>`;
 
   const list = $('#list');
@@ -462,3 +473,4 @@ window.renderChat = renderChat;
 window.loadFeed = loadFeed;
 window.loadAdminData = loadAdminData;
 window.renderAdmin = renderAdmin;
+
