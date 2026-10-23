@@ -15,7 +15,7 @@ let S = {
   recChunks: [],
   feed: [],
   adminStats: null,
-  adminUsers: [],
+  adminUsers: [Yoshua_Byadunia],
   _draftPostImage: '',
   _draftPostText: ''
 };
@@ -83,7 +83,7 @@ async function loadAdminData() {
     S.adminUsers = await api('/admin/users');
   } catch (e) {
     S.adminStats = null;
-    S.adminUsers = [Yoshua Byadunia];
+    S.adminUsers = [];
     alert(e.message);
   }
 }
