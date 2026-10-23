@@ -1,5 +1,5 @@
 // BARAZANI Online — backend serveur (Express + WebSocket + JSON store)
-// Usage: npm install && node server.js  (port 3000 par défaut)
+// Usage: npm install && node server.js  (port 10000 par défaut)
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import jwt from 'jsonwebtoken';
@@ -10,8 +10,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const JWT_SECRET = process.env.JWT_SECRET || 'barazani-secret-change-me-2024';
-const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'mon_amour_et_mon_coeur_grace_mihigo';
+const PORT = process.env.PORT || 10000;
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 // ---------- Stockage persistant (JSON) ----------
@@ -25,6 +25,19 @@ const uid = () => 'u' + (db.nextId++);
 const app = express();
 app.use(express.json({ limit: '8mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+// Route de test
+app.get('/api/hello', (req, res) => {
+  res.json({ message: '✅ BARAZANI Server is running!', time: new Date().toISOString() });
+});
+
+// Réponse pour la racine
+app.get('/', (req, res) => {
+  res.json({ 
+    name: 'BARAZANI Online API',
+    status: '✅ running',
+    version: '1.0.0'
+  });
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -177,4 +190,33 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => { if (sockets.get(user.id) === ws) sockets.delete(user.id); });
 });
 
-server.listen(PORT, () => console.log(`BARAZANI Online sur http://0.0.0.0:${PORT}`));
+server.listen(PORT, () => console.log(`BARAZANI Online-listen on port sur http://0.0.0.0:${PORT}`));
+// ---------- Route de test ----------
+app.get('/api/hello', (req, res) => {
+  res.json({ message: '✅ BARAZANI Server is running!', time: new Date().toISOString() });
+});
+
+app.get('/', (req, res) => {
+  res.json({ 
+    name: 'BARAZANI Online API',
+    status: '✅ running',
+    version: '1.0.0'
+  });
+});
+
+// ---------- WebSocket ----------
+function sendTo(userId, obj) {
+  const ws = sockets.get(userId);
+  if (ws && ws.readyState === 1) try { ws.send(JSON.stringify(obj)); } catch {}
+}
+wss.on('connection', (ws, req) => {
+  const token = new URL(req.url, 'http://x').searchParams.get('token');
+  let user;
+  try { user = jwt.verify(token, JWT_SECRET); } catch { ws.close(); return; }
+  sockets.set(user.id, ws);
+  ws.on('close', () => { if (sockets.get(user.id) === ws) sockets.delete(user.id); });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ BARAZANI Online — listening on port ${PORT}`);
+});
