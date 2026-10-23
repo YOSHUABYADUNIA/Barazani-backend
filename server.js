@@ -70,8 +70,13 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
+app.use(express.static(__dirname, { index: false }));
 
-app.get('/', (req, res) => {
+app.get(['/', '/index.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.get(/^\/(?!api|ws).*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
