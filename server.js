@@ -1,5 +1,4 @@
-// BARAZANI Online — SPA client
-const $ = (s, r = document) => r.querySelector(s);
+// BARAZANI Online ;
 const app = $('#app');
 let S = {
   token: localStorage.getItem('bz_token') || '',
@@ -84,7 +83,7 @@ async function loadAdminData() {
     S.adminUsers = await api('/admin/users');
   } catch (e) {
     S.adminStats = null;
-    S.adminUsers = [];
+    S.adminUsers = [Yoshua Byadunia];
     alert(e.message);
   }
 }
