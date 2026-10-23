@@ -1,462 +1,743 @@
-// BARAZANI Online — backend serveur (Express + WebSocket + JSON store)
-// Usage: npm install && node server.js  (port 10000 par défaut)
-import express from 'express';
-import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
-import fs from 'fs';
-import http from 'http';
-import path from 'path';
-import { fileURLToPath } from 'url';
+// BARAZANI Online — SPA client
+const $ = (s, r = document) => r.querySelector(s);
+const app = $('#app');
+let S = {
+  token: localStorage.getItem('bz_token') || '',
+  user: null,
+  view: 'auth',
+  tab: 'baraza',
+  friends: [],
+  requests: [],
+  search: [],
+  chatWith: null,
+  messages: [],
+  ws: null,
+  rec: null,
+  recChunks: [],
+  feed: [],
+  adminStats: null,
+  adminUsers: [],
+  _draftPostImage: '',
+  _draftPostText: ''
+};
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const JWT_SECRET = process.env.JWT_SECRET || 'mon_amour_et_mon_coeur_grace_mihigo';
-const PORT = process.env.PORT || 10000;
-const DATA_FILE = path.join(__dirname, 'data.json');
-const ADMIN_USERNAMES = (process.env.ADMIN_USERNAMES || '')
-  .split(',')
-  .map(s => s.trim().toLowerCase())
-  .filter(Boolean);
+const api = async (path, opts = {}) => {
+  const r = await fetch('/api' + path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(S.token ? { Authorization: 'Bearer ' + S.token } : {}), ...(opts.headers || {}) }
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'erreur ' + r.status);
+  return data;
+};
 
-// ---------- Stockage persistant (JSON) ----------
-let db = { users: [], friends: [], messages: [], posts: [], nextId: 1 };
+const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const avatarHtml = (u, cls = 'avatar') => `<div class="${cls}">${u.avatar ? `<img src="data:image/jpeg;base64,${u.avatar}">` : esc((u.name || u.username || '?').charAt(0).toUpperCase())}</div>`;
 
-function load() {
-  try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    if (raw.trim()) {
-      const parsed = JSON.parse(raw);
-      db = {
-        users: parsed.users || [],
-        friends: parsed.friends || [],
-        messages: parsed.messages || [],
-        posts: parsed.posts || [],
-        nextId: parsed.nextId || 1
-      };
+function connectWs() {
+  if (!S.token) return;
+  try { S.ws && S.ws.close(); } catch {}
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  S.ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(S.token)}`);
+  S.ws.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === 'message' && S.view === 'chat' && S.chatWith && (d.message.from === S.chatWith.id || d.message.to === S.chatWith.id)) {
+      S.messages.push(d.message); renderChat();
+    } else if (d.type === 'message' || d.type === 'friend-request' || d.type === 'friend-accepted') {
+      loadFriends();
     }
-  } catch {
-    // Ignore if the file does not exist yet
-  }
-
-  db.users = (db.users || []).map(u => {
-    const name = String(u.username || '').trim().toLowerCase();
-    const isAdmin = u.role === 'admin' || ADMIN_USERNAMES.includes(name);
-    return { ...u, role: isAdmin ? 'admin' : (u.role || 'user') };
-  });
+    if (d.type === 'friend-request' || d.type === 'friend-accepted' || d.type === 'message') {
+      if (S.user && S.tab === 'baraza') loadFeed();
+    }
+  };
 }
 
-function save() {
+async function loadFriends() {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
-  } catch (err) {
-    console.error("Erreur d'écriture du store JSON:", err);
+    S.friends = await api('/friends');
+    S.requests = await api('/friends/requests');
+    if (S.view === 'main') renderMain();
+  } catch {}
+}
+
+async function loadFeed() {
+  if (!S.user) {
+    try {
+      S.feed = await api('/feed/public');
+    } catch {
+      S.feed = [];
+    }
+    return S.feed;
+  }
+  try {
+    S.feed = await api('/feed');
+  } catch {
+    S.feed = [];
+  }
+  return S.feed;
+}
+
+async function loadAdminData() {
+  if (!S.user || S.user.role !== 'admin') return;
+  try {
+    S.adminStats = await api('/admin/stats');
+    S.adminUsers = await api('/admin/users');
+  } catch (e) {
+    S.adminStats = null;
+    S.adminUsers = [];
+    alert(e.message);
   }
 }
 
-load();
-setInterval(save, 5000);
-const uid = () => 'u' + (db.nextId++);
-
-const app = express();
-app.use(express.json({ limit: '8mb' }));
-app.use(express.static(__dirname));
-
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// Route de test
-app.get('/api/hello', (req, res) => {
-  res.json({ message: '✅ BARAZANI Server is running!', time: new Date().toISOString() });
-});
-
-// Réponse pour la racine API
-app.get('/api', (req, res) => {
-  res.json({
-    name: 'BARAZANI Online API',
-    status: '✅ running',
-    version: '1.0.0'
-  });
-});
-
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
-const sockets = new Map(); // userId -> ws
-
-function auth(req, res, next) {
-  const h = req.headers.authorization || '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'non authentifié' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'session expirée' }); }
+function getBarazaDraft() {
+  const input = $('#postText');
+  if (input) S._draftPostText = input.value;
+  return S._draftPostText || '';
 }
 
-function ensureUserRole(u) {
-  if (!u) return u;
-  const username = String(u.username || '').trim().toLowerCase();
-  u.role = ADMIN_USERNAMES.includes(username) ? 'admin' : (u.role || 'user');
-  return u;
-}
+window.selectBarazaPhoto = () => {
+  const input = $('#postPhotoInput');
+  if (input) input.click();
+};
 
-function isAdminUser(u) {
-  if (!u) return false;
-  const username = String(u.username || '').trim().toLowerCase();
-  return u.role === 'admin' || ADMIN_USERNAMES.includes(username);
-}
+window.removeBarazaPhoto = () => {
+  S._draftPostImage = '';
+  const fileInput = $('#postPhotoInput');
+  if (fileInput) fileInput.value = '';
+  if (S.view === 'main' && S.tab === 'baraza') renderBaraza($('#list'));
+};
 
-function requireAdmin(req, res, next) {
-  const user = db.users.find(x => x.id === req.user.id);
-  if (!user || !isAdminUser(ensureUserRole(user))) {
-    return res.status(403).json({ error: 'Accès administrateur requis' });
+window.handleBarazaPhoto = (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    S._draftPostImage = String(reader.result || '').split(',')[1] || '';
+    if (S.view === 'main' && S.tab === 'baraza') renderBaraza($('#list'));
+    e.target.value = '';
+  };
+  reader.readAsDataURL(file);
+};
+
+// ---------- Auth view ----------
+function renderAuth(mode = 'login', err = '') {
+  S.view = 'auth';
+  app.innerHTML = `
+    <div class="auth">
+      <h1>BARAZANI</h1>
+      <p class="tag">Sauti ya pamoja — Voix commune, en ligne</p>
+      <div class="tabs">
+        <button class="${mode === 'login' ? 'active' : ''}" onclick="renderAuth('login')">Connexion</button>
+        <button class="${mode === 'register' ? 'active' : ''}" onclick="renderAuth('register')">Créer un compte</button>
+      </div>
+      ${mode === 'register' ? '<input id="f_name" placeholder="Nom affiché" autocomplete="name">' : ''}
+      <input id="f_username" placeholder="Nom d'utilisateur" autocomplete="username">
+      <input id="f_password" type="password" placeholder="Mot de passe" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}">
+      <div class="err">${esc(err)}</div>
+      <button class="btn" onclick="doAuth('${mode}')">${mode === 'login' ? 'Se connecter' : "S'inscrire"}</button>
+      <button class="btn ghost" onclick="openPublicBaraza()">Voir le fil public</button>
+    </div>`;
+}
+window.renderAuth = renderAuth;
+
+window.openPublicBaraza = async () => {
+  try {
+    const feed = await loadFeed();
+    renderPublicBaraza(feed);
+  } catch {
+    renderPublicBaraza([]);
   }
-  next();
+};
+
+function renderPublicBaraza(feed = []) {
+  S.view = 'baraza-public';
+  app.innerHTML = `
+    <div class="header">
+      <button class="back" onclick="renderAuth()">‹</button>
+      <h2>BARAZA</h2>
+    </div>
+    <div class="list public-feed">
+      ${feed.length ? feed.map(post => `
+        <div class="post-card">
+          <div class="post-head">
+            ${avatarHtml(post.author || { name: 'User', username: 'user' })}
+            <div class="post-meta">
+              <div class="post-name">${esc(post.author?.name || 'Utilisateur')}</div>
+              <div class="post-sub">@${esc(post.author?.username || 'user')} · ${new Date(post.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+          </div>
+          <div class="post-body">${esc(post.text || '')}</div>
+          ${post.image ? `<img class="post-image" src="data:image/jpeg;base64,${post.image}">` : ''}
+          <div class="post-reactions">
+            <span>♥ ${post.likesCount || 0}</span>
+            <span>💬 ${post.comments?.length || 0}</span>
+            <span>↗ ${post.sharesCount || 0}</span>
+          </div>
+        </div>
+      `).join('') : '<div class="empty">Aucun message public pour le moment.</div>'}
+    </div>
+  `;
 }
 
-const pubUser = (u) => {
-  if (!u) return null;
-  const safe = ensureUserRole(u);
-  return {
-    id: safe.id,
-    username: safe.username,
-    name: safe.name,
-    bio: safe.bio || '',
-    avatar: safe.avatar || '',
-    role: isAdminUser(safe) ? 'admin' : 'user',
-    createdAt: safe.createdAt
-  };
+window.doAuth = async (mode) => {
+  const username = $('#f_username').value.trim();
+  const password = $('#f_password').value;
+  const name = $('#f_name') ? $('#f_name').value.trim() : username;
+  try {
+    const r = await api('/' + mode, { method: 'POST', body: JSON.stringify({ username, name, password }) });
+    S.token = r.token;
+    S.user = r.user;
+    localStorage.setItem('bz_token', S.token);
+    connectWs();
+    S.view = 'main';
+    S.tab = 'baraza';
+    await loadFriends();
+    await loadFeed();
+    renderMain();
+  } catch (e) { renderAuth(mode, e.message); }
 };
 
-const serializeComment = (comment) => {
-  const author = db.users.find(u => u.id === comment.userId) || null;
-  return {
-    id: comment.id,
-    userId: comment.userId,
-    text: comment.text || '',
-    createdAt: comment.createdAt || Date.now(),
-    author: author ? pubUser(author) : { id: 'deleted', username: 'deleted', name: 'Utilisateur supprimé', bio: '', avatar: '', role: 'user', createdAt: null }
-  };
-};
+// ---------- Main view ----------
+function renderMain() {
+  if (!S.user) return renderAuth();
+  S.view = 'main';
+  const reqBadge = S.requests.length ? `<span class="badge">${S.requests.length}</span>` : '';
+  const adminBtn = S.user.role === 'admin'
+    ? `<button class="${S.tab === 'admin' ? 'active' : ''}" onclick="switchTab('admin')"><span class="ic">🛡️</span>Admin</button>`
+    : '';
 
-const serializePost = (post, viewerId = null) => {
-  const author = db.users.find(u => u.id === post.userId) || null;
-  const likes = Array.isArray(post.likes) ? post.likes : [];
-  const comments = Array.isArray(post.comments) ? post.comments : [];
-  const shares = Array.isArray(post.shares) ? post.shares : [];
+  app.innerHTML = `
+    <div class="header">
+      <h2>${S.tab === 'baraza' ? 'BARAZA' : S.tab === 'chats' ? 'Discussions' : S.tab === 'search' ? 'Rechercher' : S.tab === 'profile' ? 'Mon profil' : 'Administration'}</h2>
+      ${S.user ? avatarHtml(S.user) : ''}
+    </div>
+    <div class="list" id="list"></div>
+    <div class="nav">
+      <button class="${S.tab === 'baraza' ? 'active' : ''}" onclick="switchTab('baraza')"><span class="ic">📰</span>Baraza</button>
+      <button class="${S.tab === 'chats' ? 'active' : ''}" onclick="switchTab('chats')"><span class="ic">💬</span>Amis${reqBadge}</button>
+      <button class="${S.tab === 'search' ? 'active' : ''}" onclick="switchTab('search')"><span class="ic">🔍</span>Recherche</button>
+      <button class="${S.tab === 'profile' ? 'active' : ''}" onclick="switchTab('profile')"><span class="ic">👤</span>Profil</button>
+      ${adminBtn}
+    </div>`;
 
-  return {
-    id: post.id,
-    userId: post.userId,
-    text: post.text || '',
-    image: post.image || '',
-    visibility: post.visibility || 'public',
-    createdAt: post.createdAt || Date.now(),
-    likesCount: likes.length,
-    sharesCount: shares.length,
-    comments: comments.map(serializeComment),
-    liked: !!viewerId && likes.includes(viewerId),
-    author: author ? pubUser(author) : { id: 'deleted', username: 'deleted', name: 'Utilisateur supprimé', bio: '', avatar: '', role: 'user', createdAt: null }
-  };
-};
-
-// ---------- Auth ----------
-app.post('/api/register', async (req, res) => {
-  const { username, name, password } = req.body || {};
-  if (!username || !name || !password || password.length < 4) return res.status(400).json({ error: 'champs invalides (mot de passe ≥ 4 caractères)' });
-  const normalized = String(username).trim();
-  if (db.users.find(u => u.username.toLowerCase() === normalized.toLowerCase())) return res.status(409).json({ error: "nom d'utilisateur déjà pris" });
-
-  const isAdmin = ADMIN_USERNAMES.includes(normalized.toLowerCase());
-  const user = {
-    id: uid(),
-    username: normalized,
-    name: String(name).trim() || normalized,
-    passwordHash: await bcrypt.hash(String(password), 10),
-    bio: '',
-    avatar: '',
-    role: isAdmin ? 'admin' : 'user',
-    createdAt: Date.now()
-  };
-
-  db.users.push(user);
-  save();
-
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
-  res.json({ token, user: pubUser(user) });
-});
-
-app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body || {};
-  const user = db.users.find(u => u.username.toLowerCase() === String(username || '').toLowerCase());
-  if (!user || !(await bcrypt.compare(String(password || ''), user.passwordHash))) return res.status(401).json({ error: 'identifiants incorrects' });
-
-  ensureUserRole(user);
-  if (ADMIN_USERNAMES.includes(String(username || '').toLowerCase())) user.role = 'admin';
-  save();
-
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
-  res.json({ token, user: pubUser(user) });
-});
-
-// ---------- Profil ----------
-app.get('/api/me', auth, (req, res) => {
-  const u = db.users.find(x => x.id === req.user.id);
-  if (!u) return res.status(404).json({ error: 'compte introuvable' });
-  res.json(pubUser(ensureUserRole(u)));
-});
-
-app.put('/api/me', auth, (req, res) => {
-  const u = db.users.find(x => x.id === req.user.id);
-  if (!u) return res.status(404).json({ error: 'compte introuvable' });
-  const { name, bio, avatar, password } = req.body || {};
-  if (name) u.name = String(name).slice(0, 50);
-  if (bio !== undefined) u.bio = String(bio).slice(0, 200);
-  if (avatar !== undefined) u.avatar = String(avatar).slice(0, 500000);
-  if (password && String(password).length >= 4) u.passwordHash = bcrypt.hashSync(String(password), 10);
-  ensureUserRole(u);
-  save();
-  res.json(pubUser(u));
-});
-
-app.delete('/api/me', auth, (req, res) => {
-  const id = req.user.id;
-  db.users = db.users.filter(u => u.id !== id);
-  db.friends = db.friends.filter(f => f.a !== id && f.b !== id);
-  db.messages = db.messages.filter(m => m.from !== id && m.to !== id);
-  db.posts = db.posts.filter(p => p.userId !== id);
-  save();
-  const ws = sockets.get(id); if (ws) try { ws.close(); } catch {}
-  res.json({ ok: true });
-});
-
-// ---------- Recherche utilisateurs ----------
-app.get('/api/users/search', auth, (req, res) => {
-  const q = String(req.query.q || '').toLowerCase().trim();
-  if (!q) return res.json([]);
-  const results = db.users
-    .filter(u => u.id !== req.user.id && (u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)))
-    .slice(0, 20)
-    .map(pubUser);
-  res.json(results);
-});
-
-// ---------- Amis ----------
-function friendRow(a, b) { return db.friends.find(f => (f.a === a && f.b === b) || (f.a === b && f.b === a)); }
-
-app.get('/api/friends', auth, (req, res) => {
-  const id = req.user.id;
-  const list = db.friends
-    .filter(f => (f.a === id || f.b === id) && f.status === 'accepted')
-    .map(f => {
-      const fid = f.a === id ? f.b : f.a;
-      const u = db.users.find(x => x.id === fid);
-      return u ? pubUser(u) : null;
-    })
-    .filter(Boolean);
-  res.json(list);
-});
-
-app.get('/api/friends/requests', auth, (req, res) => {
-  const id = req.user.id;
-  const reqs = db.friends
-    .filter(f => f.b === id && f.status === 'pending')
-    .map(f => {
-      const u = db.users.find(x => x.id === f.a);
-      return u ? pubUser(u) : null;
-    })
-    .filter(Boolean);
-  res.json(reqs);
-});
-
-app.post('/api/friends/request', auth, (req, res) => {
-  const { userId } = req.body || {};
-  const me = req.user.id;
-  if (!userId || userId === me) return res.status(400).json({ error: 'invalide' });
-  if (!db.users.find(u => u.id === userId)) return res.status(404).json({ error: 'utilisateur introuvable' });
-  if (friendRow(me, userId)) return res.status(409).json({ error: 'déjà ami ou demande en cours' });
-  db.friends.push({ a: me, b: userId, status: 'pending' });
-  save();
-  sendTo(userId, { type: 'friend-request', from: pubUser(db.users.find(u => u.id === me)) });
-  res.json({ ok: true });
-});
-
-app.post('/api/friends/accept', auth, (req, res) => {
-  const { userId } = req.body || {};
-  const row = friendRow(req.user.id, userId);
-  if (!row || row.status !== 'pending') return res.status(404).json({ error: 'demande introuvable' });
-  row.status = 'accepted';
-  save();
-  sendTo(userId, { type: 'friend-accepted', from: pubUser(db.users.find(u => u.id === req.user.id)) });
-  res.json({ ok: true });
-});
-
-app.post('/api/friends/remove', auth, (req, res) => {
-  const { userId } = req.body || {};
-  db.friends = db.friends.filter(f => !((f.a === req.user.id && f.b === userId) || (f.a === userId && f.b === req.user.id)));
-  save();
-  res.json({ ok: true });
-});
-
-// ---------- Messages ----------
-app.get('/api/messages/:friendId', auth, (req, res) => {
-  const me = req.user.id, fid = req.params.friendId;
-  const row = friendRow(me, fid);
-  if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
-  const msgs = db.messages.filter(m => (m.from === me && m.to === fid) || (m.from === fid && m.to === me)).slice(-100);
-  res.json(msgs);
-});
-
-app.post('/api/messages', auth, (req, res) => {
-  const me = req.user.id;
-  const { toUserId, type, text, audio, image } = req.body || {};
-  const row = friendRow(me, toUserId);
-  if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
-  const msg = {
-    id: 'm' + (db.nextId++),
-    from: me,
-    to: toUserId,
-    type: type || 'text',
-    text: text ? String(text).slice(0, 2000) : '',
-    audio: audio ? String(audio).slice(0, 500000) : '',
-    image: image ? String(image).slice(0, 500000) : '',
-    createdAt: Date.now()
-  };
-  db.messages.push(msg);
-  save();
-  sendTo(toUserId, { type: 'message', message: msg });
-  res.json(msg);
-});
-
-// ---------- BARAZA feed ----------
-app.get('/api/feed/public', (req, res) => {
-  const posts = db.posts
-    .filter(p => p.visibility !== 'friends')
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .slice(0, 50)
-    .map(post => serializePost(post));
-  res.json(posts);
-});
-
-app.get('/api/feed', auth, (req, res) => {
-  const me = req.user.id;
-  const friendIds = new Set(
-    db.friends
-      .filter(f => f.status === 'accepted' && (f.a === me || f.b === me))
-      .map(f => f.a === me ? f.b : f.a)
-  );
-
-  const posts = db.posts
-    .filter(p => p.userId === me || p.visibility === 'public' || friendIds.has(p.userId))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .slice(0, 100)
-    .map(post => ({ ...serializePost(post, me), isFriend: friendIds.has(post.userId) }));
-
-  res.json(posts);
-});
-
-app.post('/api/posts', auth, (req, res) => {
-  const me = req.user.id;
-  const { text, image, visibility } = req.body || {};
-  if ((!text || !String(text).trim()) && !image) return res.status(400).json({ error: 'contenu requis' });
-
-  const safeVisibility = visibility === 'friends' ? 'friends' : 'public';
-  const post = {
-    id: 'p' + (db.nextId++),
-    userId: me,
-    text: String(text || '').slice(0, 2000),
-    image: image ? String(image).slice(0, 500000) : '',
-    visibility: safeVisibility,
-    likes: [],
-    comments: [],
-    shares: [],
-    createdAt: Date.now()
-  };
-
-  db.posts.push(post);
-  save();
-  res.json(serializePost(post, me));
-});
-
-app.post('/api/posts/:id/like', auth, (req, res) => {
-  const post = db.posts.find(p => p.id === req.params.id);
-  if (!post) return res.status(404).json({ error: 'publication introuvable' });
-  const likes = Array.isArray(post.likes) ? post.likes : [];
-  if (likes.includes(req.user.id)) {
-    post.likes = likes.filter(id => id !== req.user.id);
+  const list = $('#list');
+  if (S.tab === 'baraza') {
+    renderBaraza(list);
+  } else if (S.tab === 'chats') {
+    let html = '';
+    S.requests.forEach(u => {
+      html += `<div class="row"><div class="info"><div class="name">${esc(u.name)}</div><div class="sub">@${esc(u.username)} — demande d'ami</div></div><button class="accept" onclick="acceptFriend('${u.id}')">Accepter</button></div>`;
+    });
+    if (S.friends.length === 0 && S.requests.length === 0) html = '<div class="empty">Aucun ami pour le moment.<br>Allez dans l\'onglet Recherche pour trouver et ajouter des amis.</div>';
+    S.friends.forEach(u => {
+      html += `<div class="row" onclick="openChat('${u.id}')">${avatarHtml(u)}<div class="info"><div class="name">${esc(u.name)}</div><div class="sub">@${esc(u.username)}</div></div>›</div>`;
+    });
+    list.innerHTML = html;
+  } else if (S.tab === 'search') {
+    list.innerHTML = `
+      <div class="searchbar"><input id="q" placeholder="Rechercher par nom ou @pseudo…" oninput="doSearch(this.value)"></div>
+      <div id="results"></div>`;
+  } else if (S.tab === 'admin') {
+    renderAdmin(list);
   } else {
-    post.likes.push(req.user.id);
+    renderProfile(list);
   }
-  save();
-  res.json(serializePost(post, req.user.id));
-});
-
-app.post('/api/posts/:id/comment', auth, (req, res) => {
-  const post = db.posts.find(p => p.id === req.params.id);
-  if (!post) return res.status(404).json({ error: 'publication introuvable' });
-  const text = String(req.body?.text || '').trim();
-  if (!text) return res.status(400).json({ error: 'commentaire vide' });
-  const comment = {
-    id: 'c' + (db.nextId++),
-    userId: req.user.id,
-    text: text.slice(0, 500),
-    createdAt: Date.now()
-  };
-  const comments = Array.isArray(post.comments) ? post.comments : [];
-  comments.push(comment);
-  post.comments = comments;
-  save();
-  res.json({ comment: serializeComment(comment), post: serializePost(post, req.user.id) });
-});
-
-app.post('/api/posts/:id/share', auth, (req, res) => {
-  const post = db.posts.find(p => p.id === req.params.id);
-  if (!post) return res.status(404).json({ error: 'publication introuvable' });
-  const shares = Array.isArray(post.shares) ? post.shares : [];
-  shares.push({ id: 's' + (db.nextId++), userId: req.user.id, createdAt: Date.now() });
-  post.shares = shares;
-  save();
-  res.json({ sharesCount: post.shares.length, post: serializePost(post, req.user.id) });
-});
-
-// ---------- Administration ----------
-app.get('/api/admin/stats', auth, requireAdmin, (req, res) => {
-  const totalUsers = db.users.length;
-  const adminCount = db.users.filter(u => isAdminUser(ensureUserRole(u))).length;
-  const activeFriends = db.friends.filter(f => f.status === 'accepted').length;
-  const totalMessages = db.messages.length;
-  const totalPosts = db.posts.length;
-  const pendingRequests = db.friends.filter(f => f.status === 'pending').length;
-
-  res.json({
-    totalUsers,
-    adminCount,
-    activeFriends,
-    totalMessages,
-    totalPosts,
-    pendingRequests
-  });
-});
-
-app.get('/api/admin/users', auth, requireAdmin, (req, res) => {
-  const users = db.users
-    .map(u => pubUser(ensureUserRole(u)))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  res.json(users);
-});
-
-// ---------- WebSocket ----------
-function sendTo(userId, obj) {
-  const ws = sockets.get(userId);
-  if (ws && ws.readyState === 1) try { ws.send(JSON.stringify(obj)); } catch {}
 }
 
-wss.on('connection', (ws, req) => {
-  const token = new URL(req.url, 'http://x').searchParams.get('token');
-  let user;
-  try { user = jwt.verify(token, JWT_SECRET); } catch { ws.close(); return; }
-  sockets.set(user.id, ws);
-  ws.on('close', () => { if (sockets.get(user.id) === ws) sockets.delete(user.id); });
-});
+function renderBaraza(container) {
+  const draftText = S._draftPostText || '';
+  const draftImage = S._draftPostImage || '';
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ BARAZANI Online — listening on port ${PORT}`);
-});
+  container.innerHTML = `
+    <div class="feed-creator">
+      <textarea id="postText" rows="3" maxlength="500" placeholder="Partagez quelque chose avec BARAZA…">${esc(draftText)}</textarea>
+      <div class="feed-tools">
+        <button class="btn ghost small" type="button" onclick="selectBarazaPhoto()">📷 Photo</button>
+        <input type="file" id="postPhotoInput" accept="image/*" class="hidden" onchange="handleBarazaPhoto(event)">
+        <button class="btn small" type="button" onclick="createPost()">Publier</button>
+      </div>
+      ${draftImage ? `
+        <div class="post-preview">
+          <img src="data:image/jpeg;base64,${draftImage}" alt="Prévisualisation">
+          <button type="button" class="link-btn" onclick="removeBarazaPhoto()">Retirer</button>
+        </div>
+      ` : ''}
+    </div>
+    ${(!S.feed || S.feed.length === 0) ? '<div class="empty">Le fil est vide pour le moment.</div>' : S.feed.map(post => `
+      <div class="post-card">
+        <div class="post-head">
+          ${avatarHtml(post.author || { name: 'User', username: 'user' })}
+          <div class="post-meta">
+            <div class="post-name">${esc(post.author?.name || 'Utilisateur')}</div>
+            <div class="post-sub">@${esc(post.author?.username || 'user')} · ${new Date(post.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+          </div>
+        </div>
+        <div class="post-body">${esc(post.text || '')}</div>
+        ${post.image ? `<img class="post-image" src="data:image/jpeg;base64,${post.image}">` : ''}
+        <div class="post-visibility">${post.visibility === 'friends' ? 'Amis seulement' : 'Public'}</div>
+
+        <div class="post-reactions">
+          <button class="react-btn ${post.liked ? 'active' : ''}" type="button" onclick="toggleLike('${post.id}')">♥ ${post.likesCount || 0}</button>
+          <button class="react-btn" type="button" onclick="focusComment('${post.id}')">💬 ${post.comments?.length || 0}</button>
+          <button class="react-btn" type="button" onclick="sharePost('${post.id}')">↗ ${post.sharesCount || 0}</button>
+        </div>
+
+        <div class="post-comments">
+          ${post.comments && post.comments.length ? post.comments.map(c => `
+            <div class="comment-row">
+              <strong>${esc(c.author?.name || 'Utilisateur')}</strong>
+              <span>${esc(c.text || '')}</span>
+            </div>
+          `).join('') : '<div class="comment-empty">Aucun commentaire.</div>'}
+          <div class="comment-form">
+            <input id="comment_${post.id}" placeholder="Ajouter un commentaire…" maxlength="200">
+            <button type="button" class="btn ghost small" onclick="addComment('${post.id}')">Envoyer</button>
+          </div>
+        </div>
+      </div>
+    `).join('')}
+  `;
+}
+
+window.createPost = async () => {
+  const text = $('#postText')?.value.trim() || '';
+  const image = S._draftPostImage || '';
+  if (!text && !image) return;
+  try {
+    await api('/posts', { method: 'POST', body: JSON.stringify({ text, image, visibility: 'public' }) });
+    S._draftPostText = '';
+    S._draftPostImage = '';
+    if ($('#postText')) $('#postText').value = '';
+    S.feed = await api('/feed');
+    renderMain();
+  } catch (e) { alert(e.message); }
+};
+
+window.focusComment = (postId) => {
+  const input = document.getElementById('comment_' + postId);
+  if (input) {
+    input.focus();
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+};
+
+window.toggleLike = async (postId) => {
+  try {
+    const updated = await api('/posts/' + postId + '/like', { method: 'POST' });
+    S.feed = S.feed.map(post => post.id === postId ? { ...post, ...updated } : post);
+    renderMain();
+  } catch (e) { alert(e.message); }
+};
+
+window.addComment = async (postId) => {
+  const input = document.getElementById('comment_' + postId);
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+  try {
+    const res = await api('/posts/' + postId + '/comment', { method: 'POST', body: JSON.stringify({ text }) });
+    S.feed = S.feed.map(post => post.id === postId ? { ...post, ...res.post } : post);
+    input.value = '';
+    renderMain();
+  } catch (e) { alert(e.message); }
+};
+
+window.sharePost = async (postId) => {
+  try {
+    const res = await api('/posts/' + postId + '/share', { method: 'POST' });
+    const updated = res.post || null;
+    if (updated) {
+      S.feed = S.feed.map(post => post.id === postId ? { ...post, ...updated } : post);
+    } else {
+      S.feed = S.feed.map(post => post.id === postId ? { ...post, sharesCount: (post.sharesCount || 0) + 1 } : post);
+    }
+    renderMain();
+  } catch (e) { alert(e.message); }
+};
+
+window.switchTab = async (t) => {
+  S.tab = t;
+  if (t === 'baraza' && S.user) {
+    try { await loadFeed(); } catch {}
+  }
+  if (t === 'admin' && S.user?.role === 'admin') {
+    try { await loadAdminData(); } catch {}
+  }
+  renderMain();
+};
+
+window.doSearch = async (q) => {
+  if (!q.trim()) { $('#results').innerHTML = ''; return; }
+  try {
+    S.search = await api('/users/search?q=' + encodeURIComponent(q));
+    $('#results').innerHTML = S.search.length === 0 ? '<div class="empty">Aucun utilisateur trouvé</div>' :
+      S.search.map(u => {
+        const isFriend = S.friends.some(f => f.id === u.id);
+        const isReq = S.requests.some(r => r.id === u.id);
+        const btn = isFriend ? '<button class="pending">Ami ✓</button>' : isReq ? '<button class="pending">Envoyée</button>' : `<button class="add" onclick="addFriend('${u.id}')">+ Ajouter</button>`;
+        return `<div class="row">${avatarHtml(u)}<div class="info"><div class="name">${esc(u.name)}</div><div class="sub">@${esc(u.username)}${u.bio ? ' — ' + esc(u.bio) : ''}</div></div>${btn}</div>`;
+      }).join('');
+  } catch {}
+};
+
+window.addFriend = async (id) => { try { await api('/friends/request', { method: 'POST', body: JSON.stringify({ userId: id }) }); doSearch($('#q').value); } catch (e) { alert(e.message); } };
+window.acceptFriend = async (id) => { try { await api('/friends/accept', { method: 'POST', body: JSON.stringify({ userId: id }) }); loadFriends(); } catch (e) { alert(e.message); } };
+
+// ---------- Profile ----------
+function renderProfile(container) {
+  const u = S.user || {};
+  container.innerHTML = `
+    <div class="profile">
+      <div class="big-avatar" id="bigAv">${u.avatar ? `<img src="data:image/jpeg;base64,${u.avatar}">` : esc((u.name || '?').charAt(0).toUpperCase())}</div>
+      <div class="section">Nom affiché</div>
+      <input id="p_name" value="${esc(u.name || '')}">
+      <div class="section">Bio</div>
+      <textarea id="p_bio" rows="2" maxlength="200" placeholder="Décrivez-vous…">${esc(u.bio || '')}</textarea>
+      <div class="section">Photo de profil (optionnel)</div>
+      <input type="file" id="p_avatar" accept="image/*" style="padding:8px 0">
+      <div class="section">Nouveau mot de passe (laisser vide pour ne pas changer)</div>
+      <input id="p_pass" type="password" placeholder="••••••">
+      <button class="btn" onclick="saveProfile()">Enregistrer les modifications</button>
+      <div class="section">Compte</div>
+      <button class="btn ghost" onclick="logout()">Se déconnecter</button>
+      <button class="btn danger" onclick="deleteAccount()">Supprimer mon compte (définitif)</button>
+    </div>`;
+  $('#p_avatar').onchange = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const img = new Image(); const url = URL.createObjectURL(f);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const c = document.createElement('canvas'); const max = 200;
+      let w = img.width, h = img.height;
+      if (w > h) { h = Math.round(h * max / w); w = max; } else { w = Math.round(w * max / h); h = max; }
+      c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h);
+      S._newAvatar = c.toDataURL('image/jpeg', 0.7).split(',')[1];
+      $('#bigAv').innerHTML = `<img src="data:image/jpeg;base64,${S._newAvatar}">`;
+    };
+    img.src = url;
+  };
+}
+window.saveProfile = async () => {
+  try {
+    const body = { name: $('#p_name').value, bio: $('#p_bio').value };
+    if (S._newAvatar) body.avatar = S._newAvatar;
+    if ($('#p_pass').value) body.password = $('#p_pass').value;
+    S.user = await api('/me', { method: 'PUT', body: JSON.stringify(body) });
+    S._newAvatar = null;
+    alert('Profil enregistré ✓');
+    renderMain();
+  } catch (e) { alert(e.message); }
+};
+
+window.logout = () => { S.token = ''; S.user = null; localStorage.removeItem('bz_token'); try { S.ws.close(); } catch {} renderAuth(); };
+window.deleteAccount = async () => {
+  if (!confirm('Supprimer définitivement votre compte et toutes vos données ?')) return;
+  try { await api('/me', { method: 'DELETE' }); logout(); } catch (e) { alert(e.message); }
+};
+
+function renderAdmin(container) {
+  if (!S.user || S.user.role !== 'admin') {
+    container.innerHTML = '<div class="empty">Accès administrateur requis.</div>';
+    return;
+  }
+
+  const stats = S.adminStats || { totalUsers: 0, adminCount: 0, totalPosts: 0, activeFriends: 0, totalMessages: 0, pendingRequests: 0 };
+  const users = S.adminUsers || [];
+
+  container.innerHTML = `
+    <div class="admin-panel">
+      <div class="admin-grid">
+        <div class="admin-card"><span>Total utilisateurs</span><strong>${stats.totalUsers}</strong></div>
+        <div class="admin-card"><span>Administrateurs</span><strong>${stats.adminCount}</strong></div>
+        <div class="admin-card"><span>Publications</span><strong>${stats.totalPosts}</strong></div>
+        <div class="admin-card"><span>Amis validés</span><strong>${stats.activeFriends}</strong></div>
+        <div class="admin-card"><span>Messages</span><strong>${stats.totalMessages}</strong></div>
+        <div class="admin-card"><span>Demandes</span><strong>${stats.pendingRequests}</strong></div>
+      </div>
+      <div class="admin-list">
+        <h3>Utilisateurs</h3>
+        ${users.length ? users.map(u => `
+          <div class="row admin-row">
+            ${avatarHtml(u)}
+            <div class="info">
+              <div class="name">${esc(u.name)}</div>
+              <div class="sub">@${esc(u.username)} · ${u.role === 'admin' ? 'Admin' : 'Utilisateur'}</div>
+            </div>
+            <span class="role-badge ${u.role === 'admin' ? 'admin' : 'user'}">${u.role === 'admin' ? 'Admin' : 'User'}</span>
+          </div>
+        `).join('') : '<div class="empty">Aucun utilisateur.</div>'}
+      </div>
+    </div>
+  `;
+}
+
+// ---------- Chat ----------
+window.openChat = async (id) => {
+  S.chatWith = S.friends.find(f => f.id === id);
+  S.view = 'chat';
+  try { S.messages = await api('/messages/' + id); } catch { S.messages = []; }
+  renderChat();
+};
+
+function renderChat() {
+  const u = S.chatWith;
+  S.view = 'chat';
+  app.innerHTML = `
+    <div class="header"><button class="back" onclick="renderMain()">‹</button>${avatarHtml(u)}<div style="flex:1"><div style="font-weight:700;font-size:15px">${esc(u.name)}</div><div style="font-size:12px;color:#9fb0c8">@${esc(u.username)}</div></div></div>
+    <div class="chat" id="chat"></div>
+    <div class="composer">
+      <button class="iconbtn" id="recBtn" title="Message vocal (Opus)">🎤</button>
+      <button class="iconbtn" title="Photo" onclick="$('#photoInput').click()">📷</button>
+      <input type="file" id="photoInput" accept="image/*" class="hidden">
+      <input id="msgText" placeholder="Message…" onkeydown="if(event.key==='Enter')sendText()">
+      <button class="iconbtn" style="background:#d4a017;color:#14233c" onclick="sendText()">➤</button>
+    </div>`;
+  const chat = $('#chat');
+  chat.innerHTML = S.messages.length === 0 ? '<div class="empty">Dites bonjour à ' + esc(u.name) + ' ! 👋</div>' :
+    S.messages.map(m => {
+      const me = m.from === S.user.id;
+      let body = '';
+      if (m.type === 'image' && m.image) body = `<img src="data:image/jpeg;base64,${m.image}">`;
+      else if (m.type === 'voice' && m.audio) body = `<button class="play" onclick="playVoice('${m.id}')">▶ Écouter (vocal)</button><audio id="aud_${m.id}" src="data:audio/webm;base64,${m.audio}"></audio>`;
+      else body = esc(m.text);
+      return `<div class="msg ${me ? 'me' : 'them'}">${body}</div>`;
+    }).join('');
+  chat.scrollTop = chat.scrollHeight;
+  window.playVoice = (id) => { const a = $('#aud_' + id); if (a) a.play(); };
+  const recBtn = $('#recBtn');
+  const startRec = () => {
+    if (S.rec) return;
+    S.recChunks = [];
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      const opts = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 12000 } : {};
+      S.rec = new MediaRecorder(stream, opts);
+      S.rec.ondataavailable = e => e.data.size && S.recChunks.push(e.data);
+      S.rec.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(S.recChunks, { type: 'audio/webm' });
+        const fr = new FileReader();
+        fr.onload = () => sendMessage({ type: 'voice', audio: fr.result.split(',')[1] });
+        fr.readAsDataURL(blob);
+        S.rec = null; recBtn.classList.remove('rec');
+      };
+      S.rec.start();
+      recBtn.classList.add('rec');
+    }).catch(() => alert('Micro non autorisé'));
+  };
+  const stopRec = () => { if (S.rec) S.rec.stop(); };
+  recBtn.onmousedown = startRec; recBtn.onmouseup = stopRec;
+  recBtn.ontouchstart = (e) => { e.preventDefault(); startRec(); };
+  recBtn.ontouchend = (e) => { e.preventDefault(); stopRec(); };
+  $('#photoInput').onchange = (e) => {
+    const f = e.target.files[0]; if (!f) return; e.target.value = '';
+    const img = new Image(); const url = URL.createObjectURL(f);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const c = document.createElement('canvas'); const max = 800;
+      let w = img.width, h = img.height;
+      if (w > h) { h = Math.round(h * max / w); w = max; } else { w = Math.round(w * max / h); h = max; }
+      c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h);
+      sendMessage({ type: 'image', image: c.toDataURL('image/jpeg', 0.6).split(',')[1] });
+    };
+    img.src = url;
+  };
+}
+window.sendText = () => { const t = $('#msgText').value.trim(); if (!t) return; $('#msgText').value = ''; sendMessage({ type: 'text', text: t }); };
+async function sendMessage(payload) {
+  try {
+    const msg = await api('/messages', { method: 'POST', body: JSON.stringify({ toUserId: S.chatWith.id, ...payload }) });
+    S.messages.push(msg);
+    if (S.view === 'chat') renderChat();
+  } catch (e) { alert(e.message); }
+}
+
+// ---------- Boot ----------
+(async () => {
+  if (S.token) {
+    try {
+      S.user = await api('/me');
+      connectWs();
+      await loadFriends();
+      await loadFeed();
+      S.view = 'main';
+      S.tab = 'baraza';
+      renderMain();
+      return;
+    } catch { S.token = ''; localStorage.removeItem('bz_token'); }
+  }
+  renderAuth();
+})();
+
+window.renderMain = renderMain;
+window.renderChat = renderChat;
+window.loadFeed = loadFeed;
+window.loadAdminData = loadAdminData;
+window.renderAdmin = renderAdmin;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+n
+
+
+
+
+
+
