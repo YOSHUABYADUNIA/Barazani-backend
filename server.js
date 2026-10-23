@@ -49,11 +49,13 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname,'style.css'));
+app.use(cors({origin:'*'}));
+app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.sendFile(__dirname, 'index.html');
-});
+  res.send('barazani backend is live- africa-owner:Yoshua Byadunia';
+}));
+app.get('/api/admin/users'(req,res)=>{res.json({users:db.users,count:db.users.lenght,owner:'Yoshua Byadunia'}));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
