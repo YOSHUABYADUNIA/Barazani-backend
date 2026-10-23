@@ -49,7 +49,7 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname,'public')));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
@@ -414,4 +414,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, () => console.log(`BARAZANI Online - listening on http://0.0.0.0:${PORT}`));
+server.listen(PORT, () => app.get('/api/hello', (req, res) => {
+  res.json({ message: '✅ BARAZANI Server is running!', time: new Date().toISOString() });
+});
+console.log(`BARAZANI Online - listening on http://0.0.0.0:${PORT}`));
