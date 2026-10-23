@@ -1,7 +1,23 @@
 // BARAZANI Online — SPA client
 const $ = (s, r = document) => r.querySelector(s);
 const app = $('#app');
-let S = { token: localStorage.getItem('bz_token') || '', user: null, view: 'auth', tab: 'chats', friends: [], requests: [], search: [], chatWith: null, messages: [], ws: null, rec: null, recChunks: [] };
+let S = {
+  token: localStorage.getItem('bz_token') || '',
+  user: null,
+  view: 'auth',
+  tab: 'baraza',
+  friends: [],
+  requests: [],
+  search: [],
+  chatWith: null,
+  messages: [],
+  ws: null,
+  rec: null,
+  recChunks: [],
+  feed: [],
+  adminStats: null,
+  adminUsers: []
+};
 
 const api = async (path, opts = {}) => {
   const r = await fetch('/api' + path, {
@@ -12,7 +28,8 @@ const api = async (path, opts = {}) => {
   if (!r.ok) throw new Error(data.error || 'erreur ' + r.status);
   return data;
 };
-const esc = (s) => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const avatarHtml = (u, cls = 'avatar') => `<div class="${cls}">${u.avatar ? `<img src="data:image/jpeg;base64,${u.avatar}">` : esc((u.name || u.username || '?').charAt(0).toUpperCase())}</div>`;
 
 function connectWs() {
@@ -27,6 +44,10 @@ function connectWs() {
     } else if (d.type === 'message' || d.type === 'friend-request' || d.type === 'friend-accepted') {
       loadFriends();
     }
+
+    if (d.type === 'friend-request' || d.type === 'friend-accepted' || d.type === 'message') {
+      if (S.user && S.tab === 'baraza') loadFeed();
+    }
   };
 }
 
@@ -36,6 +57,27 @@ async function loadFriends() {
     S.requests = await api('/friends/requests');
     if (S.view === 'main') renderMain();
   } catch {}
+}
+
+async function loadFeed() {
+  if (!S.user) {
+    S.feed = await api('/feed/public');
+    return S.feed;
+  }
+  S.feed = await api('/feed');
+  return S.feed;
+}
+
+async function loadAdminData() {
+  if (!S.user || S.user.role !== 'admin') return;
+  try {
+    S.adminStats = await api('/admin/stats');
+    S.adminUsers = await api('/admin/users');
+  } catch (e) {
+    S.adminStats = null;
+    S.adminUsers = [];
+    alert(e.message);
+  }
 }
 
 // ---------- Auth view ----------
@@ -54,9 +96,44 @@ function renderAuth(mode = 'login', err = '') {
       <input id="f_password" type="password" placeholder="Mot de passe" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}">
       <div class="err">${esc(err)}</div>
       <button class="btn" onclick="doAuth('${mode}')">${mode === 'login' ? 'Se connecter' : "S'inscrire"}</button>
+      <button class="btn ghost" onclick="openPublicBaraza()">Voir le fil public</button>
     </div>`;
 }
 window.renderAuth = renderAuth;
+
+window.openPublicBaraza = async () => {
+  try {
+    const feed = await loadFeed();
+    renderPublicBaraza(feed);
+  } catch (e) {
+    renderPublicBaraza([]);
+  }
+};
+
+function renderPublicBaraza(feed = []) {
+  S.view = 'baraza-public';
+  app.innerHTML = `
+    <div class="header">
+      <button class="back" onclick="renderAuth()">‹</button>
+      <h2>BARAZA</h2>
+    </div>
+    <div class="list public-feed">
+      ${feed.length ? feed.map(post => `
+        <div class="post-card">
+          <div class="post-head">
+            ${avatarHtml(post.author || { name: 'User', username: 'user' })}
+            <div class="post-meta">
+              <div class="post-name">${esc(post.author?.name || 'Utilisateur')}</div>
+              <div class="post-sub">@${esc(post.author?.username || 'user')} · ${new Date(post.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+          </div>
+          <div class="post-body">${esc(post.text || '')}</div>
+          ${post.image ? `<img class="post-image" src="data:image/jpeg;base64,${post.image}">` : ''}
+        </div>
+      `).join('') : '<div class="empty">Aucun message public pour le moment.</div>'}
+    </div>
+  `;
+}
 
 window.doAuth = async (mode) => {
   const username = $('#f_username').value.trim();
@@ -64,32 +141,44 @@ window.doAuth = async (mode) => {
   const name = $('#f_name') ? $('#f_name').value.trim() : username;
   try {
     const r = await api('/' + mode, { method: 'POST', body: JSON.stringify({ username, name, password }) });
-    S.token = r.token; S.user = r.user;
+    S.token = r.token;
+    S.user = r.user;
     localStorage.setItem('bz_token', S.token);
     connectWs();
-    S.view = 'main'; S.tab = 'chats';
-    loadFriends();
+    S.view = 'main';
+    S.tab = 'baraza';
+    await loadFriends();
+    await loadFeed();
     renderMain();
   } catch (e) { renderAuth(mode, e.message); }
 };
 
 // ---------- Main view ----------
 function renderMain() {
+  if (!S.user) return renderAuth();
   S.view = 'main';
   const reqBadge = S.requests.length ? `<span class="badge">${S.requests.length}</span>` : '';
   app.innerHTML = `
-    <div class="header"><h2>${S.tab === 'chats' ? 'Discussions' : S.tab === 'search' ? 'Rechercher' : 'Mon profil'}</h2>${S.user ? avatarHtml(S.user) : ''}</div>
+    <div class="header">
+      <h2>${S.tab === 'baraza' ? 'BARAZA' : S.tab === 'chats' ? 'Discussions' : S.tab === 'search' ? 'Rechercher' : S.tab === 'profile' ? 'Mon profil' : 'Administration'}</h2>
+      ${S.user ? avatarHtml(S.user) : ''}
+    </div>
     <div class="list" id="list"></div>
     <div class="nav">
+      <button class="${S.tab === 'baraza' ? 'active' : ''}" onclick="switchTab('baraza')"><span class="ic">📰</span>Baraza</button>
       <button class="${S.tab === 'chats' ? 'active' : ''}" onclick="switchTab('chats')"><span class="ic">💬</span>Amis${reqBadge}</button>
       <button class="${S.tab === 'search' ? 'active' : ''}" onclick="switchTab('search')"><span class="ic">🔍</span>Recherche</button>
       <button class="${S.tab === 'profile' ? 'active' : ''}" onclick="switchTab('profile')"><span class="ic">👤</span>Profil</button>
+      ${S.user.role === 'admin' ? '<button class="' + (S.tab === 'admin' ? 'active' : '') + '" onclick="switchTab(\'admin\')"><span class="ic">🛡️</span>Admin</button>' : ''}
     </div>`;
+
   const list = $('#list');
-  if (S.tab === 'chats') {
+  if (S.tab === 'baraza') {
+    renderBaraza(list);
+  } else if (S.tab === 'chats') {
     let html = '';
     S.requests.forEach(u => {
-      html += `<div class="row">${avatarHtml(u)}<div class="info"><div class="name">${esc(u.name)}</div><div class="sub">@${esc(u.username)} — demande d'ami</div></div><button class="accept" onclick="acceptFriend('${u.id}')">Accepter</button></div>`;
+      html += `<div class="row"><div class="info"><div class="name">${esc(u.name)}</div><div class="sub">@${esc(u.username)} — demande d'ami</div></div><button class="accept" onclick="acceptFriend('${u.id}')">Accepter</button></div>`;
     });
     if (S.friends.length === 0 && S.requests.length === 0) html = '<div class="empty">Aucun ami pour le moment.<br>Allez dans l\'onglet Recherche pour trouver et ajouter des amis.</div>';
     S.friends.forEach(u => {
@@ -100,11 +189,71 @@ function renderMain() {
     list.innerHTML = `
       <div class="searchbar"><input id="q" placeholder="Rechercher par nom ou @pseudo…" oninput="doSearch(this.value)"></div>
       <div id="results"></div>`;
+  } else if (S.tab === 'admin') {
+    renderAdmin(list);
   } else {
     renderProfile(list);
   }
 }
-window.switchTab = (t) => { S.tab = t; renderMain(); };
+
+function renderBaraza(container) {
+  if (!S.feed || S.feed.length === 0) {
+    container.innerHTML = `
+      <div class="feed-creator">
+        <textarea id="postText" rows="3" maxlength="500" placeholder="Partagez quelque chose avec BARAZA…"></textarea>
+        <div class="post-actions">
+          <button class="btn" onclick="createPost()">Publier</button>
+        </div>
+      </div>
+      <div class="empty">Le fil est vide pour le moment.</div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="feed-creator">
+      <textarea id="postText" rows="3" maxlength="500" placeholder="Partagez quelque chose avec BARAZA…"></textarea>
+      <div class="post-actions">
+        <button class="btn" onclick="createPost()">Publier</button>
+      </div>
+    </div>
+    ${S.feed.map(post => `
+      <div class="post-card">
+        <div class="post-head">
+          ${avatarHtml(post.author || { name: 'User', username: 'user' })}
+          <div class="post-meta">
+            <div class="post-name">${esc(post.author?.name || 'Utilisateur')}</div>
+            <div class="post-sub">@${esc(post.author?.username || 'user')} · ${new Date(post.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+          </div>
+        </div>
+        <div class="post-body">${esc(post.text || '')}</div>
+        ${post.image ? `<img class="post-image" src="data:image/jpeg;base64,${post.image}">` : ''}
+        <div class="post-visibility">${post.visibility === 'friends' ? 'Amis seulement' : 'Public'}</div>
+      </div>
+    `).join('')}
+  `;
+}
+
+window.createPost = async () => {
+  const text = $('#postText')?.value.trim();
+  if (!text) return;
+  try {
+    await api('/posts', { method: 'POST', body: JSON.stringify({ text, visibility: 'public' }) });
+    $('#postText').value = '';
+    S.feed = await api('/feed');
+    renderMain();
+  } catch (e) { alert(e.message); }
+};
+
+window.switchTab = async (t) => {
+  S.tab = t;
+  if (t === 'baraza' && S.user) {
+    try { await loadFeed(); } catch {}
+  }
+  if (t === 'admin' && S.user?.role === 'admin') {
+    try { await loadAdminData(); } catch {}
+  }
+  renderMain();
+};
 
 window.doSearch = async (q) => {
   if (!q.trim()) { $('#results').innerHTML = ''; return; }
@@ -119,6 +268,7 @@ window.doSearch = async (q) => {
       }).join('');
   } catch {}
 };
+
 window.addFriend = async (id) => { try { await api('/friends/request', { method: 'POST', body: JSON.stringify({ userId: id }) }); doSearch($('#q').value); } catch (e) { alert(e.message); } };
 window.acceptFriend = async (id) => { try { await api('/friends/accept', { method: 'POST', body: JSON.stringify({ userId: id }) }); loadFriends(); } catch (e) { alert(e.message); } };
 
@@ -167,11 +317,48 @@ window.saveProfile = async () => {
     renderMain();
   } catch (e) { alert(e.message); }
 };
+
 window.logout = () => { S.token = ''; S.user = null; localStorage.removeItem('bz_token'); try { S.ws.close(); } catch {} renderAuth(); };
 window.deleteAccount = async () => {
   if (!confirm('Supprimer définitivement votre compte et toutes vos données ?')) return;
   try { await api('/me', { method: 'DELETE' }); logout(); } catch (e) { alert(e.message); }
 };
+
+function renderAdmin(container) {
+  if (!S.user || S.user.role !== 'admin') {
+    container.innerHTML = '<div class="empty">Accès administrateur requis.</div>';
+    return;
+  }
+
+  const stats = S.adminStats || { totalUsers: 0, adminCount: 0, totalPosts: 0, activeFriends: 0, totalMessages: 0, pendingRequests: 0 };
+  const users = S.adminUsers || [];
+
+  container.innerHTML = `
+    <div class="admin-panel">
+      <div class="admin-grid">
+        <div class="admin-card"><span>Total utilisateurs</span><strong>${stats.totalUsers}</strong></div>
+        <div class="admin-card"><span>Administrateurs</span><strong>${stats.adminCount}</strong></div>
+        <div class="admin-card"><span>Publications</span><strong>${stats.totalPosts}</strong></div>
+        <div class="admin-card"><span>Amis validés</span><strong>${stats.activeFriends}</strong></div>
+        <div class="admin-card"><span>Messages</span><strong>${stats.totalMessages}</strong></div>
+        <div class="admin-card"><span>Demandes</span><strong>${stats.pendingRequests}</strong></div>
+      </div>
+      <div class="admin-list">
+        <h3>Utilisateurs</h3>
+        ${users.length ? users.map(u => `
+          <div class="row admin-row">
+            ${avatarHtml(u)}
+            <div class="info">
+              <div class="name">${esc(u.name)}</div>
+              <div class="sub">@${esc(u.username)} · ${u.role === 'admin' ? 'Admin' : 'Utilisateur'}</div>
+            </div>
+            <span class="role-badge ${u.role === 'admin' ? 'admin' : 'user'}">${u.role === 'admin' ? 'Admin' : 'User'}</span>
+          </div>
+        `).join('') : '<div class="empty">Aucun utilisateur.</div>'}
+      </div>
+    </div>
+  `;
+}
 
 // ---------- Chat ----------
 window.openChat = async (id) => {
@@ -180,11 +367,12 @@ window.openChat = async (id) => {
   try { S.messages = await api('/messages/' + id); } catch { S.messages = []; }
   renderChat();
 };
+
 function renderChat() {
   const u = S.chatWith;
   S.view = 'chat';
   app.innerHTML = `
-    <div class="header"><button class="back" onclick="renderMain()">‹</button>${avatarHtml(u)}<div style="flex:1"><div style="font-weight:700;font-size:15px">${esc(u.name)}</div><div style="font-size:11px;color:#9fb0c8">@${esc(u.username)}</div></div></div>
+    <div class="header"><button class="back" onclick="renderMain()">‹</button>${avatarHtml(u)}<div style="flex:1"><div style="font-weight:700;font-size:15px">${esc(u.name)}</div><div style="font-size:12px;color:#9fb0c8">@${esc(u.username)}</div></div></div>
     <div class="chat" id="chat"></div>
     <div class="composer">
       <button class="iconbtn" id="recBtn" title="Message vocal (Opus)">🎤</button>
@@ -205,7 +393,6 @@ function renderChat() {
     }).join('');
   chat.scrollTop = chat.scrollHeight;
   window.playVoice = (id) => { const a = $('#aud_' + id); if (a) a.play(); };
-  // voice record
   const recBtn = $('#recBtn');
   const startRec = () => {
     if (S.rec) return;
@@ -230,7 +417,6 @@ function renderChat() {
   recBtn.onmousedown = startRec; recBtn.onmouseup = stopRec;
   recBtn.ontouchstart = (e) => { e.preventDefault(); startRec(); };
   recBtn.ontouchend = (e) => { e.preventDefault(); stopRec(); };
-  // photo
   $('#photoInput').onchange = (e) => {
     const f = e.target.files[0]; if (!f) return; e.target.value = '';
     const img = new Image(); const url = URL.createObjectURL(f);
@@ -257,7 +443,22 @@ async function sendMessage(payload) {
 // ---------- Boot ----------
 (async () => {
   if (S.token) {
-    try { S.user = await api('/me'); connectWs(); S.view = 'main'; loadFriends(); renderMain(); return; } catch { S.token = ''; localStorage.removeItem('bz_token'); }
+    try {
+      S.user = await api('/me');
+      connectWs();
+      await loadFriends();
+      await loadFeed();
+      S.view = 'main';
+      S.tab = 'baraza';
+      renderMain();
+      return;
+    } catch { S.token = ''; localStorage.removeItem('bz_token'); }
   }
   renderAuth();
 })();
+
+window.renderMain = renderMain;
+window.renderChat = renderChat;
+window.loadFeed = loadFeed;
+window.loadAdminData = loadAdminData;
+window.renderAdmin = renderAdmin;
