@@ -51,11 +51,7 @@ const app = express();
 app.use(express.json({ limit: '20mb' }));
 
 app.get('/', (req, res) => {
-  res.send({
-    status: 'Barazani-backend is live Africa',
-    owner: 'Yoshua Byadunia',
-    users: db.users.length
-  });
+  res.send(__dirname 'index.html');
 });
 
 const server = http.createServer(app);
