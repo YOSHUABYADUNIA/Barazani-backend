@@ -8,7 +8,9 @@ const state = {
   friendRequests: [],
   searchResults: [],
   pendingImage: '',
-  currentView: 'home'
+  currentView: 'home',
+  chatWithUserId: null,
+  messages: []
 };
 
 const escapeHtml = (value = '') =>
@@ -100,6 +102,9 @@ async function loadFriends() {
   try {
     const list = await apiFetch('/api/friends');
     state.friends = Array.isArray(list) ? list : [];
+    if (!state.chatWithUserId && state.friends[0]) {
+      state.chatWithUserId = state.friends[0].id;
+    }
   } catch {
     state.friends = [];
   }
@@ -116,6 +121,20 @@ async function loadFriendRequests() {
     state.friendRequests = Array.isArray(list) ? list : [];
   } catch {
     state.friendRequests = [];
+  }
+}
+
+async function loadConversation(friendId) {
+  if (!friendId) {
+    state.messages = [];
+    return;
+  }
+
+  try {
+    const msgs = await apiFetch(`/api/messages/${friendId}`);
+    state.messages = Array.isArray(msgs) ? msgs : [];
+  } catch {
+    state.messages = [];
   }
 }
 
@@ -174,6 +193,39 @@ async function removeFriend(userId) {
       body: { userId }
     });
     await loadFriends();
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function openChat(userId) {
+  state.currentView = 'messages';
+  state.chatWithUserId = userId;
+  await loadConversation(userId);
+  render();
+}
+
+async function sendDirectMessage(event) {
+  event.preventDefault();
+  const friendId = state.chatWithUserId;
+  if (!friendId) return;
+
+  const form = event.currentTarget;
+  const text = (form.message?.value || '').trim();
+  if (!text) return;
+
+  try {
+    const msg = await apiFetch('/api/messages', {
+      method: 'POST',
+      body: {
+        toUserId: friendId,
+        text
+      }
+    });
+
+    state.messages = [...state.messages, msg];
+    form.reset();
     render();
   } catch (error) {
     alert(error.message);
@@ -299,7 +351,7 @@ async function saveProfile(event) {
   const bio = form.bio.value.trim();
 
   if (name) payload.name = name;
-  if (bio !== undefined) payload.bio = bio;
+  payload.bio = bio;
 
   try {
     const updated = await apiFetch('/api/me', {
@@ -430,7 +482,10 @@ function renderHomePage() {
                 <strong>${escapeHtml(user.name || user.username)}</strong>
                 <span>@${escapeHtml(user.username)}</span>
               </div>
-              <button class="friend-btn" data-user-id="${escapeHtml(user.id)}">+ Ajouter</button>
+              <div class="friend-actions">
+                <button class="friend-btn" data-user-id="${escapeHtml(user.id)}">+ Ajouter</button>
+                <button class="ghost-btn" data-open-chat="${escapeHtml(user.id)}">Message</button>
+              </div>
             </div>
           `
         )
@@ -452,6 +507,7 @@ function renderHomePage() {
           <div class="nav-pills">
             <button class="active" data-view="home">Accueil</button>
             <button data-view="friends">Amis</button>
+            <button data-view="messages">Messages</button>
             <button data-view="profile">Profil</button>
           </div>
           <div class="searchbox">
@@ -562,6 +618,7 @@ function renderFriendsPage() {
                 </div>
               </div>
               <div class="friend-actions">
+                <button class="ghost-btn" data-open-chat="${escapeHtml(friend.id)}">Message</button>
                 <button class="ghost-btn" data-remove-friend="${escapeHtml(friend.id)}">Supprimer</button>
               </div>
             </div>
@@ -584,6 +641,7 @@ function renderFriendsPage() {
               </div>
               <div class="friend-actions">
                 <button class="primary-btn small" data-accept-friend="${escapeHtml(user.id)}">Accepter</button>
+                <button class="ghost-btn" data-open-chat="${escapeHtml(user.id)}">Message</button>
               </div>
             </div>
           `
@@ -606,6 +664,7 @@ function renderFriendsPage() {
           <div class="nav-pills">
             <button data-view="home">Accueil</button>
             <button class="active" data-view="friends">Amis</button>
+            <button data-view="messages">Messages</button>
             <button data-view="profile">Profil</button>
           </div>
           <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
@@ -621,6 +680,89 @@ function renderFriendsPage() {
         <div class="panel-card">
           <h3 class="section-title">Demandes</h3>
           ${requestsMarkup}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMessagesPage() {
+  const friends = state.friends || [];
+  const activeFriend = friends.find((friend) => friend.id === state.chatWithUserId) || friends[0] || null;
+
+  if (state.chatWithUserId && !activeFriend) {
+    state.chatWithUserId = null;
+  }
+
+  const friendList = friends.length
+    ? friends
+        .map(
+          (friend) => `
+            <button class="friend-card ${state.chatWithUserId === friend.id ? 'selected' : ''}" data-open-chat="${escapeHtml(friend.id)}" type="button">
+              <div class="friend-meta">
+                <div class="mini-avatar">${escapeHtml((friend.name || friend.username || 'U').charAt(0).toUpperCase())}</div>
+                <div>
+                  <strong>${escapeHtml(friend.name || friend.username)}</strong>
+                  <div class="profile-handle">@${escapeHtml(friend.username)}</div>
+                </div>
+              </div>
+            </button>
+          `
+        )
+        .join('')
+    : '<div class="empty-state">Aucun ami disponible pour le chat.</div>';
+
+  const chatMessages = state.messages.length
+    ? state.messages
+        .map((msg) => {
+          const isMine = msg.from === state.user.id;
+          return `
+            <div class="chat-message ${isMine ? 'mine' : 'other'}">
+              <div class="chat-bubble">${escapeHtml(msg.text || '')}</div>
+            </div>
+          `;
+        })
+        .join('')
+    : '<div class="empty-state">Aucune conversation pour le moment.</div>';
+
+  const activeFriendName = activeFriend ? activeFriend.name || activeFriend.username : 'Sélectionner un ami';
+
+  return `
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand-mark">B</div>
+          <div class="topbar-title">
+            <small>Baraza</small>
+            <strong>Messages</strong>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <div class="nav-pills">
+            <button data-view="home">Accueil</button>
+            <button data-view="friends">Amis</button>
+            <button class="active" data-view="messages">Messages</button>
+            <button data-view="profile">Profil</button>
+          </div>
+          <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
+        </div>
+      </header>
+
+      <div class="messages-layout">
+        <div class="panel-card">
+          <h3 class="section-title">Conversations</h3>
+          <div class="chat-list">${friendList}</div>
+        </div>
+
+        <div class="panel-card chat-panel">
+          <h3 class="section-title">${escapeHtml(activeFriendName)}</h3>
+          <div class="chat-thread">${chatMessages}</div>
+
+          <form id="messageForm" class="message-form">
+            <input name="message" type="text" placeholder="Écrire un message..." ${activeFriend ? '' : 'disabled'} />
+            <button class="primary-btn" type="submit" ${activeFriend ? '' : 'disabled'}>Envoyer</button>
+          </form>
         </div>
       </div>
     </div>
@@ -645,6 +787,7 @@ function renderProfilePage() {
           <div class="nav-pills">
             <button data-view="home">Accueil</button>
             <button data-view="friends">Amis</button>
+            <button data-view="messages">Messages</button>
             <button class="active" data-view="profile">Profil</button>
           </div>
           <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
@@ -704,6 +847,8 @@ function render() {
 
   if (state.currentView === 'friends') {
     app.innerHTML = renderFriendsPage();
+  } else if (state.currentView === 'messages') {
+    app.innerHTML = renderMessagesPage();
   } else if (state.currentView === 'profile') {
     app.innerHTML = renderProfilePage();
   } else {
@@ -713,6 +858,12 @@ function render() {
   app.querySelectorAll('[data-view]').forEach((button) => {
     button.addEventListener('click', () => {
       state.currentView = button.dataset.view;
+      if (state.currentView === 'messages' && !state.chatWithUserId && state.friends[0]) {
+        state.chatWithUserId = state.friends[0].id;
+      }
+      if (state.currentView === 'messages' && state.chatWithUserId) {
+        loadConversation(state.chatWithUserId);
+      }
       render();
     });
   });
@@ -728,6 +879,8 @@ function render() {
     state.searchResults = [];
     state.pendingImage = '';
     state.currentView = 'home';
+    state.chatWithUserId = null;
+    state.messages = [];
     render();
   });
 
@@ -739,6 +892,7 @@ function render() {
 
   app.querySelector('#composerForm')?.addEventListener('submit', publishPost);
   app.querySelector('#profileForm')?.addEventListener('submit', saveProfile);
+  app.querySelector('#messageForm')?.addEventListener('submit', sendDirectMessage);
 
   app.querySelector('#imageUpload')?.addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -774,6 +928,10 @@ function render() {
     button.addEventListener('click', () => requestFriend(button.dataset.userId));
   });
 
+  app.querySelectorAll('[data-open-chat]').forEach((button) => {
+    button.addEventListener('click', () => openChat(button.dataset.openChat));
+  });
+
   app.querySelectorAll('[data-accept-friend]').forEach((button) => {
     button.addEventListener('click', () => acceptFriend(button.dataset.acceptFriend));
   });
@@ -806,6 +964,8 @@ window.addEventListener('storage', (event) => {
       state.searchResults = [];
       state.pendingImage = '';
       state.currentView = 'home';
+      state.chatWithUserId = null;
+      state.messages = [];
     }
     init();
   }
