@@ -9,18 +9,18 @@ hébergé et accessible par les téléphones.
 ```bash
 npm install
 node server.js
-# Serveur sur http://0.0.0.0:3000
+# Serveur sur http://0.0.0.0:10000
 ```
 
 - Les données sont sauvegardées dans `data.json` (base JSON).
 - Changez le secret JWT : `JWT_SECRET=un_long_secret_aleatoire node server.js`
-- Port personnalisé : `PORT=8080 node server.js`
+- Port personnalisé : `PORT=10000 node server.js`
 
 ## Déploiement
 
 ### Option A — Sur un VPS / serveur personnel (recommandé)
 1. Copiez ce dossier sur le serveur (Node.js 18+ requis).
-2. `npm install && node server.js` (ou utilisez `pm2` pour le garder en ligne).
+2. `npm install && node server.js` (ou utilisez `npm` pour le garder en ligne).
 3. Utilisez un nom de domaine + HTTPS (Let's Encrypt / nginx) pour la production.
 4. Dans l'APK, saisissez l'adresse, ex. `https://barazani.exemple.com`.
 
@@ -31,8 +31,8 @@ node server.js
 - L'URL fournie (ex. `https://barazani.onrender.com`) est à saisir dans l'APK.
 
 ### Option C — Réseau local (démo)
-- Lancez `node server.js` sur un ordinateur du même Wi-Fi.
-- Dans l'APK, saisissez `http://<IP-de-l-ordinateur>:3000` (ex. `http://192.168.1.10:3000`).
+- Lancez `node server.js` sur un Android.
+- Dans l'APK, saisissez `http://0.0.0.0:10000` (ex. `http://192.168.1.10:10000`).
 - Le téléphone et l'ordinateur doivent être sur le même réseau.
 
 ## API (résumé)
