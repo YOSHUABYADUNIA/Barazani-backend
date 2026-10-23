@@ -20,24 +20,45 @@ let db = {
   nextId: 1
 };
 
+function ensureDataFile() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      fs.writeFileSync(DATA_FILE, JSON.stringify({ users: [], friends: [], messages: [], posts: [], nextId: 1 }, null, 2));
+    }
+  } catch (error) {
+    console.warn('Impossible de créer data.json:', error.message);
+  }
+}
+
 function load() {
   try {
+    ensureDataFile();
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     const parsed = JSON.parse(raw);
     db = {
-      users: parsed.users || [],
-      friends: parsed.friends || [],
-      messages: parsed.messages || [],
-      posts: parsed.posts || [],
-      nextId: parsed.nextId || 1
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+      friends: Array.isArray(parsed.friends) ? parsed.friends : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      posts: Array.isArray(parsed.posts) ? parsed.posts : [],
+      nextId: Number(parsed.nextId) || 1
     };
   } catch (error) {
+    console.warn('Erreur de lecture de data.json, réinitialisation du stockage local:', error.message);
     db = { users: [], friends: [], messages: [], posts: [], nextId: 1 };
+    try {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+    } catch (saveError) {
+      console.warn('Impossible d’écrire le fichier de données:', saveError.message);
+    }
   }
 }
 
 function save() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+  } catch (error) {
+    console.warn('Impossible de sauvegarder les données:', error.message);
+  }
 }
 
 load();
@@ -51,7 +72,7 @@ const app = express();
 app.use(express.json({ limit: '20mb' }));
 
 app.get('/', (req, res) => {
-  res.send(__dirname 'index.html');
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 const server = http.createServer(app);
@@ -134,20 +155,25 @@ app.post('/api/register', async (req, res) => {
   if (!username || !name || !password || password.length < 4) {
     return res.status(400).json({ error: 'champs invalides (mot de passe ≥ 4 caractères)' });
   }
-  if (db.users.find((u) => u.username.toLowerCase() === String(username).trim().toLowerCase())) {
+
+  const normalizedUsername = String(username).trim();
+  if (db.users.find((u) => u.username.toLowerCase() === normalizedUsername.toLowerCase())) {
     return res.status(409).json({ error: "nom d'utilisateur déjà pris" });
   }
+
   const user = {
     id: uid(),
-    username: String(username).trim(),
+    username: normalizedUsername,
     name: String(name).trim(),
     passwordHash: await bcrypt.hash(password, 10),
     bio: '',
     avatar: '',
     createdAt: Date.now()
   };
+
   db.users.push(user);
   save();
+
   const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
   return res.json({ token, user: pubUser(user) });
 });
@@ -157,9 +183,11 @@ app.post('/api/login', async (req, res) => {
   const user = db.users.find(
     (u) => u.username.toLowerCase() === String(username || '').trim().toLowerCase()
   );
+
   if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) {
     return res.status(401).json({ error: 'identifiants incorrects' });
   }
+
   const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
   return res.json({ token, user: pubUser(user) });
 });
@@ -174,6 +202,7 @@ app.get('/api/me', auth, (req, res) => {
 app.put('/api/me', auth, (req, res) => {
   const u = db.users.find((x) => x.id === req.user.id);
   if (!u) return res.status(404).json({ error: 'compte introuvable' });
+
   const { name, bio, avatar, password } = req.body || {};
   if (name) u.name = String(name).slice(0, 50).trim();
   if (bio !== undefined) u.bio = String(bio).slice(0, 200);
@@ -181,6 +210,7 @@ app.put('/api/me', auth, (req, res) => {
   if (password && String(password).length >= 4) {
     u.passwordHash = bcrypt.hashSync(String(password), 10);
   }
+
   save();
   return res.json(pubUser(u));
 });
@@ -192,6 +222,7 @@ app.delete('/api/me', auth, (req, res) => {
   db.messages = db.messages.filter((m) => m.from !== id && m.to !== id);
   db.posts = db.posts.filter((p) => p.userId !== id);
   save();
+
   const ws = sockets.get(id);
   if (ws) try { ws.close(); } catch {}
   return res.json({ ok: true });
@@ -201,10 +232,12 @@ app.delete('/api/me', auth, (req, res) => {
 app.get('/api/users/search', auth, (req, res) => {
   const q = String(req.query.q || '').toLowerCase().trim();
   if (!q) return res.json([]);
+
   const results = db.users
     .filter((u) => u.id !== req.user.id && (u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)))
     .slice(0, 20)
     .map(pubUser);
+
   return res.json(results);
 });
 
@@ -223,6 +256,7 @@ app.get('/api/friends', auth, (req, res) => {
       return u ? pubUser(u) : null;
     })
     .filter(Boolean);
+
   return res.json(list);
 });
 
@@ -235,28 +269,35 @@ app.get('/api/friends/requests', auth, (req, res) => {
       return u ? pubUser(u) : null;
     })
     .filter(Boolean);
+
   return res.json(reqs);
 });
 
 app.post('/api/friends/request', auth, (req, res) => {
   const { userId } = req.body || {};
   const me = req.user.id;
+
   if (!userId || userId === me) return res.status(400).json({ error: 'invalide' });
   if (!db.users.find((u) => u.id === userId)) return res.status(404).json({ error: 'utilisateur introuvable' });
   if (friendRow(me, userId)) return res.status(409).json({ error: 'déjà ami ou demande en cours' });
+
   db.friends.push({ a: me, b: userId, status: 'pending' });
   save();
   sendTo(userId, { type: 'friend-request', from: pubUser(db.users.find((u) => u.id === me)) });
+
   return res.json({ ok: true });
 });
 
 app.post('/api/friends/accept', auth, (req, res) => {
   const { userId } = req.body || {};
   const row = friendRow(req.user.id, userId);
+
   if (!row || row.status !== 'pending') return res.status(404).json({ error: 'demande introuvable' });
+
   row.status = 'accepted';
   save();
   sendTo(userId, { type: 'friend-accepted', from: pubUser(db.users.find((u) => u.id === req.user.id)) });
+
   return res.json({ ok: true });
 });
 
@@ -274,8 +315,13 @@ app.get('/api/messages/:friendId', auth, (req, res) => {
   const me = req.user.id;
   const fid = req.params.friendId;
   const row = friendRow(me, fid);
+
   if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
-  const msgs = db.messages.filter((m) => (m.from === me && m.to === fid) || (m.from === fid && m.to === me)).slice(-100);
+
+  const msgs = db.messages
+    .filter((m) => (m.from === me && m.to === fid) || (m.from === fid && m.to === me))
+    .slice(-100);
+
   return res.json(msgs);
 });
 
@@ -283,7 +329,9 @@ app.post('/api/messages', auth, (req, res) => {
   const me = req.user.id;
   const { toUserId, type, text, audio, image } = req.body || {};
   const row = friendRow(me, toUserId);
+
   if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
+
   const msg = {
     id: 'm' + (db.nextId++),
     from: me,
@@ -294,6 +342,7 @@ app.post('/api/messages', auth, (req, res) => {
     image: image ? String(image).slice(0, 500000) : '',
     createdAt: Date.now()
   };
+
   db.messages.push(msg);
   save();
   sendTo(toUserId, { type: 'message', message: msg });
@@ -305,6 +354,7 @@ app.get('/api/posts', auth, (req, res) => {
   const posts = [...db.posts]
     .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
     .map((post) => serializePost(post, req.user.id));
+
   return res.json(posts);
 });
 
@@ -414,6 +464,7 @@ wss.on('connection', (ws, req) => {
     ws.close();
     return;
   }
+
   sockets.set(user.id, ws);
   ws.on('close', () => {
     if (sockets.get(user.id) === ws) sockets.delete(user.id);
