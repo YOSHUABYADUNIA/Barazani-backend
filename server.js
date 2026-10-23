@@ -70,15 +70,19 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname, { 'public'}));
-
+app.use(express.static(__dirname, {index:false,// optionel: n'expose que les assets front //setHeaders, ets }));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Route introuvable' });
+  }
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 app.get(['/', '/index.html'], (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.get(/^\/(?!api|ws).*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public'));
-});
+  res.sendFile(path.join(__dirname, index.html'));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
