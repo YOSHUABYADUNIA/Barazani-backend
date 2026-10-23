@@ -23,7 +23,10 @@ let db = {
 function ensureDataFile() {
   try {
     if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(DATA_FILE, JSON.stringify({ users: [], friends: [], messages: [], posts: [], nextId: 1 }, null, 2));
+      fs.writeFileSync(
+        DATA_FILE,
+        JSON.stringify({ users: [], friends: [], messages: [], posts: [], nextId: 1 }, null, 2)
+      );
     }
   } catch (error) {
     console.warn('Impossible de créer data.json:', error.message);
@@ -70,19 +73,15 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname, {index:false,// optionel: n'expose que les assets front //setHeaders, ets }));
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ error: 'Route introuvable' });
-  }
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
+app.use(express.static(__dirname, { index: false }));
+
 app.get(['/', '/index.html'], (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.get(/^\/(?!api|ws).*/, (req, res) => {
-  res.sendFile(path.join(__dirname, index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -461,6 +460,13 @@ app.get('/api/hello', (req, res) => {
     message: '✅ BARAZANI Server is running!',
     time: new Date().toISOString()
   });
+});
+
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Route introuvable' });
+  }
+  return res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // ---------- WebSocket ----------
