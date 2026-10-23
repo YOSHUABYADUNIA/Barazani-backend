@@ -416,5 +416,5 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, () => app.get('/api/hello', (req, res) => {
   res.json({ message: '✅ BARAZANI Server is running!', time: new Date().toISOString() });
-});
+}));
 console.log(`BARAZANI Online - listening on http://0.0.0.0:${PORT}`));
