@@ -126,8 +126,23 @@ const pubUser = (u) => {
   };
 };
 
-const serializePost = (post) => {
+const serializeComment = (comment) => {
+  const author = db.users.find(u => u.id === comment.userId) || null;
+  return {
+    id: comment.id,
+    userId: comment.userId,
+    text: comment.text || '',
+    createdAt: comment.createdAt || Date.now(),
+    author: author ? pubUser(author) : { id: 'deleted', username: 'deleted', name: 'Utilisateur supprimé', bio: '', avatar: '', role: 'user', createdAt: null }
+  };
+};
+
+const serializePost = (post, viewerId = null) => {
   const author = db.users.find(u => u.id === post.userId) || null;
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const comments = Array.isArray(post.comments) ? post.comments : [];
+  const shares = Array.isArray(post.shares) ? post.shares : [];
+
   return {
     id: post.id,
     userId: post.userId,
@@ -135,6 +150,10 @@ const serializePost = (post) => {
     image: post.image || '',
     visibility: post.visibility || 'public',
     createdAt: post.createdAt || Date.now(),
+    likesCount: likes.length,
+    sharesCount: shares.length,
+    comments: comments.map(serializeComment),
+    liked: !!viewerId && likes.includes(viewerId),
     author: author ? pubUser(author) : { id: 'deleted', username: 'deleted', name: 'Utilisateur supprimé', bio: '', avatar: '', role: 'user', createdAt: null }
   };
 };
@@ -313,7 +332,7 @@ app.get('/api/feed/public', (req, res) => {
     .filter(p => p.visibility !== 'friends')
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, 50)
-    .map(serializePost);
+    .map(post => serializePost(post));
   res.json(posts);
 });
 
@@ -329,7 +348,7 @@ app.get('/api/feed', auth, (req, res) => {
     .filter(p => p.userId === me || p.visibility === 'public' || friendIds.has(p.userId))
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, 100)
-    .map(post => ({ ...serializePost(post), isFriend: friendIds.has(post.userId) }));
+    .map(post => ({ ...serializePost(post, me), isFriend: friendIds.has(post.userId) }));
 
   res.json(posts);
 });
@@ -346,12 +365,56 @@ app.post('/api/posts', auth, (req, res) => {
     text: String(text || '').slice(0, 2000),
     image: image ? String(image).slice(0, 500000) : '',
     visibility: safeVisibility,
+    likes: [],
+    comments: [],
+    shares: [],
     createdAt: Date.now()
   };
 
   db.posts.push(post);
   save();
-  res.json(serializePost(post));
+  res.json(serializePost(post, me));
+});
+
+app.post('/api/posts/:id/like', auth, (req, res) => {
+  const post = db.posts.find(p => p.id === req.params.id);
+  if (!post) return res.status(404).json({ error: 'publication introuvable' });
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  if (likes.includes(req.user.id)) {
+    post.likes = likes.filter(id => id !== req.user.id);
+  } else {
+    post.likes.push(req.user.id);
+  }
+  save();
+  res.json(serializePost(post, req.user.id));
+});
+
+app.post('/api/posts/:id/comment', auth, (req, res) => {
+  const post = db.posts.find(p => p.id === req.params.id);
+  if (!post) return res.status(404).json({ error: 'publication introuvable' });
+  const text = String(req.body?.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'commentaire vide' });
+  const comment = {
+    id: 'c' + (db.nextId++),
+    userId: req.user.id,
+    text: text.slice(0, 500),
+    createdAt: Date.now()
+  };
+  const comments = Array.isArray(post.comments) ? post.comments : [];
+  comments.push(comment);
+  post.comments = comments;
+  save();
+  res.json({ comment: serializeComment(comment), post: serializePost(post, req.user.id) });
+});
+
+app.post('/api/posts/:id/share', auth, (req, res) => {
+  const post = db.posts.find(p => p.id === req.params.id);
+  if (!post) return res.status(404).json({ error: 'publication introuvable' });
+  const shares = Array.isArray(post.shares) ? post.shares : [];
+  shares.push({ id: 's' + (db.nextId++), userId: req.user.id, createdAt: Date.now() });
+  post.shares = shares;
+  save();
+  res.json({ sharesCount: post.shares.length, post: serializePost(post, req.user.id) });
 });
 
 // ---------- Administration ----------
@@ -397,4 +460,3 @@ wss.on('connection', (ws, req) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ BARAZANI Online — listening on port ${PORT}`);
 });
-
