@@ -1,5 +1,5 @@
 // BARAZANI Online — backend serveur (Express + WebSocket + JSON store)
-// Usage: npm install && node server.js  (port 10000 par défaut)
+// Usage: npm install & node server.js  (port 10000 par défaut)
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import jwt from 'jsonwebtoken';
