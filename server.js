@@ -52,7 +52,7 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.static(__dirname,'style.css'));
 
 app.get('/', (req, res) => {
-  res.sendFile(__dirname, 'index.html'));
+  res.sendFile(__dirname, 'index.html');
 });
 
 const server = http.createServer(app);
