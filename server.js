@@ -1,5 +1,5 @@
 // BARAZANI Online — backend serveur (Express + WebSocket + JSON store)
-// Usage: npm install && node server.js  (port 3000 par défaut)
+// Usage: npm install && node server.js  (port 10000 par défaut)
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import jwt from 'jsonwebtoken';
@@ -10,8 +10,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const JWT_SECRET = process.env.JWT_SECRET || 'barazani-secret-change-me-2024';
-const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'mon_amour_et_mon_coeur_grace_mihigo';
+const PORT = process.env.PORT || 10000;
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 // ---------- Stockage persistant (JSON) ----------
