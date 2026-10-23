@@ -177,4 +177,4 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => { if (sockets.get(user.id) === ws) sockets.delete(user.id); });
 });
 
-server.listen(PORT, () => console.log(`BARAZANI Online sur http://0.0.0.0:${PORT}`));
+server.listen(PORT, () => console.log(`BARAZANI Online-listening on port sur http://0.0.0.0:${PORT}`));
