@@ -49,7 +49,7 @@ const commentUid = () => 'c' + (db.nextId++);
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname,'index.html, style.css'));
+app.use(express.static(__dirname,'style.css'));
 
 app.get('/', (req, res) => {
   res.sendFile(__dirname, 'data file'));
