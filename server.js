@@ -55,7 +55,7 @@ app.use(express.json());
 app.get('/', (req, res) => {
   res.send({status:'Barazani-backend is live Africa',owner:'Yoshua Byadunia',users: db.users.lenght
 });
-app.get('/api/admin/users'(req,res)=>{res.json({users:db.users,count:db.users.lenght,owner:'Yoshua Byadunia'}));
+app.get('/api/admin/users'(req,res)=>{res.json({total:db.users.lenght,users:db.users});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
