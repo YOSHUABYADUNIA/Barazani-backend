@@ -53,7 +53,7 @@ app.use(cors({origin:'*'}));
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.send('barazani backend is live- africa-owner:Yoshua Byadunia';
+  res.send('barazani backend is live-africa-owner:Yoshua Byadunia';
 }));
 app.get('/api/admin/users'(req,res)=>{res.json({users:db.users,count:db.users.lenght,owner:'Yoshua Byadunia'}));
 
