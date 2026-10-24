@@ -1,974 +1,623 @@
-const app = document.getElementById('app');
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const state = {
-  token: localStorage.getItem('barazaToken') || '',
-  user: null,
-  posts: [],
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const JWT_SECRET = process.env.JWT_SECRET || 'une_chaine_très_longue_et_aleatoire';
+const PORT = process.env.PORT || 10000;
+const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'data.json');
+
+let db = {
+  users: [],
   friends: [],
-  friendRequests: [],
-  searchResults: [],
-  pendingImage: '',
-  currentView: 'home',
-  chatWithUserId: null,
-  messages: []
+  messages: [],
+  posts: [],
+  notifications: [],
+  nextId: 1
 };
 
-const escapeHtml = (value = '') =>
-  String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+function normalizeUserRole(role) {
+  return role === 'admin' ? 'admin' : 'user';
+}
 
-const formatRelativeTime = (timestamp) => {
-  const diffMs = Date.now() - Number(timestamp || 0);
-  const diffMin = Math.max(1, Math.floor(diffMs / 60000));
-
-  if (diffMin < 60) return `il y a ${diffMin} min`;
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `il y a ${diffHours} h`;
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays < 30) return `il y a ${diffDays} j`;
-  return new Date(Number(timestamp)).toLocaleDateString('fr-FR');
-};
-
-async function apiFetch(url, options = {}) {
-  const headers = { ...(options.headers || {}) };
-
-  if (state.token) {
-    headers.Authorization = `Bearer ${state.token}`;
-  }
-
-  if (options.body && !(options.body instanceof FormData)) {
-    headers['Content-Type'] = 'application/json';
-    options.body = JSON.stringify(options.body);
-  }
-
-  const response = await fetch(url, { ...options, headers });
-  let data = null;
-
+function ensureDataFile() {
   try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(data?.error || 'Une erreur est survenue.');
-  }
-
-  return data;
-}
-
-async function loadMe() {
-  if (!state.token) return;
-  try {
-    state.user = await apiFetch('/api/me');
-    await loadDashboardData();
-  } catch {
-    localStorage.removeItem('barazaToken');
-    state.token = '';
-    state.user = null;
-  }
-}
-
-async function loadDashboardData() {
-  if (!state.token) return;
-  await Promise.all([
-    loadPosts(),
-    loadFriends(),
-    loadFriendRequests(),
-    searchUsers('')
-  ]);
-}
-
-async function loadPosts() {
-  if (!state.token) {
-    state.posts = [];
-    return;
-  }
-
-  const posts = await apiFetch('/api/posts');
-  state.posts = Array.isArray(posts) ? posts : [];
-}
-
-async function loadFriends() {
-  if (!state.token) {
-    state.friends = [];
-    return;
-  }
-
-  try {
-    const list = await apiFetch('/api/friends');
-    state.friends = Array.isArray(list) ? list : [];
-    if (!state.chatWithUserId && state.friends[0]) {
-      state.chatWithUserId = state.friends[0].id;
+    if (!fs.existsSync(DATA_FILE)) {
+      fs.writeFileSync(
+        DATA_FILE,
+        JSON.stringify({ users: [], friends: [], messages: [], posts: [], notifications: [], nextId: 1 }, null, 2)
+      );
     }
-  } catch {
-    state.friends = [];
-  }
-}
-
-async function loadFriendRequests() {
-  if (!state.token) {
-    state.friendRequests = [];
-    return;
-  }
-
-  try {
-    const list = await apiFetch('/api/friends/requests');
-    state.friendRequests = Array.isArray(list) ? list : [];
-  } catch {
-    state.friendRequests = [];
-  }
-}
-
-async function loadConversation(friendId) {
-  if (!friendId) {
-    state.messages = [];
-    return;
-  }
-
-  try {
-    const msgs = await apiFetch(`/api/messages/${friendId}`);
-    state.messages = Array.isArray(msgs) ? msgs : [];
-  } catch {
-    state.messages = [];
-  }
-}
-
-async function searchUsers(term) {
-  if (!state.token) {
-    state.searchResults = [];
-    return;
-  }
-
-  const q = String(term || '').trim();
-  if (!q) {
-    state.searchResults = [];
-    return;
-  }
-
-  try {
-    const results = await apiFetch(`/api/users/search?q=${encodeURIComponent(q)}`);
-    state.searchResults = Array.isArray(results) ? results : [];
-  } catch {
-    state.searchResults = [];
-  }
-}
-
-async function requestFriend(userId) {
-  try {
-    await apiFetch('/api/friends/request', {
-      method: 'POST',
-      body: { userId }
-    });
-    await loadFriends();
-    await searchUsers(document.querySelector('#userSearch')?.value || '');
-    render();
   } catch (error) {
-    alert(error.message);
+    console.warn('Impossible de créer data.json:', error.message);
   }
 }
 
-async function acceptFriend(userId) {
+function load() {
   try {
-    await apiFetch('/api/friends/accept', {
-      method: 'POST',
-      body: { userId }
-    });
-    await loadFriends();
-    await loadFriendRequests();
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function removeFriend(userId) {
-  try {
-    await apiFetch('/api/friends/remove', {
-      method: 'POST',
-      body: { userId }
-    });
-    await loadFriends();
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function openChat(userId) {
-  state.currentView = 'messages';
-  state.chatWithUserId = userId;
-  await loadConversation(userId);
-  render();
-}
-
-async function sendDirectMessage(event) {
-  event.preventDefault();
-  const friendId = state.chatWithUserId;
-  if (!friendId) return;
-
-  const form = event.currentTarget;
-  const text = (form.message?.value || '').trim();
-  if (!text) return;
-
-  try {
-    const msg = await apiFetch('/api/messages', {
-      method: 'POST',
-      body: {
-        toUserId: friendId,
-        text
-      }
-    });
-
-    state.messages = [...state.messages, msg];
-    form.reset();
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function registerUser(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const username = form.username.value.trim();
-  const name = form.name.value.trim();
-  const password = form.password.value;
-  const errorNode = form.querySelector('.form-error');
-
-  try {
-    const result = await apiFetch('/api/register', {
-      method: 'POST',
-      body: { username, name, password }
-    });
-
-    state.token = result.token;
-    state.user = result.user;
-    localStorage.setItem('barazaToken', state.token);
-    form.reset();
-    await loadDashboardData();
-    render();
-  } catch (error) {
-    errorNode.textContent = error.message;
-  }
-}
-
-async function loginUser(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const username = form.username.value.trim();
-  const password = form.password.value;
-  const errorNode = form.querySelector('.form-error');
-
-  try {
-    const result = await apiFetch('/api/login', {
-      method: 'POST',
-      body: { username, password }
-    });
-
-    state.token = result.token;
-    state.user = result.user;
-    localStorage.setItem('barazaToken', state.token);
-    form.reset();
-    await loadDashboardData();
-    render();
-  } catch (error) {
-    errorNode.textContent = error.message;
-  }
-}
-
-async function publishPost(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const text = form.text.value.trim();
-  const image = state.pendingImage || form.image.value.trim();
-
-  if (!text && !image) {
-    return;
-  }
-
-  try {
-    const result = await apiFetch('/api/posts', {
-      method: 'POST',
-      body: { text, image }
-    });
-
-    state.posts = [result, ...state.posts];
-    state.pendingImage = '';
-    form.reset();
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function likePost(postId) {
-  try {
-    const updated = await apiFetch(`/api/posts/${postId}/like`, { method: 'POST' });
-    state.posts = state.posts.map((post) => (post.id === updated.id ? updated : post));
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function sharePost(postId) {
-  try {
-    const updated = await apiFetch(`/api/posts/${postId}/share`, { method: 'POST' });
-    state.posts = [updated, ...state.posts];
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function commentPost(postId, text) {
-  if (!text.trim()) return;
-
-  try {
-    const updated = await apiFetch(`/api/posts/${postId}/comment`, {
-      method: 'POST',
-      body: { text }
-    });
-
-    state.posts = state.posts.map((post) => (post.id === updated.id ? updated : post));
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function saveProfile(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const payload = {};
-
-  const name = form.name.value.trim();
-  const bio = form.bio.value.trim();
-
-  if (name) payload.name = name;
-  payload.bio = bio;
-
-  try {
-    const updated = await apiFetch('/api/me', {
-      method: 'PUT',
-      body: payload
-    });
-
-    state.user = { ...state.user, ...updated };
-    render();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-function renderAuth() {
-  app.innerHTML = `
-    <div class="auth-wrap">
-      <div class="auth-card">
-        <div class="brand-lockup">
-          <div class="brand-mark">B</div>
-          <div>
-            <div class="brand-kicker">Réseau social</div>
-            <h1>Baraza</h1>
-          </div>
-        </div>
-
-        <div class="auth-panel">
-          <div class="auth-tabs">
-            <button class="active" data-mode="login">Connexion</button>
-            <button data-mode="register">Inscription</button>
-          </div>
-
-          <form id="loginForm" class="auth-form">
-            <input name="username" type="text" placeholder="Nom d'utilisateur" required />
-            <input name="password" type="password" placeholder="Mot de passe" required />
-            <button type="submit" class="primary-btn wide">Se connecter</button>
-            <div class="form-error"></div>
-          </form>
-
-          <form id="registerForm" class="auth-form hidden">
-            <input name="name" type="text" placeholder="Nom complet" required />
-            <input name="username" type="text" placeholder="Nom d'utilisateur" required />
-            <input name="password" type="password" placeholder="Mot de passe (4+ caractères)" required />
-            <button type="submit" class="primary-btn wide">Créer mon compte</button>
-            <div class="form-error"></div>
-          </form>
-        </div>
-      </div>
-    </div>
-  `;
-
-  const tabs = app.querySelectorAll('.auth-tabs button');
-  const loginForm = app.querySelector('#loginForm');
-  const registerForm = app.querySelector('#registerForm');
-
-  tabs.forEach((button) => {
-    button.addEventListener('click', () => {
-      tabs.forEach((btn) => btn.classList.toggle('active', btn === button));
-      loginForm.classList.toggle('hidden', button.dataset.mode !== 'login');
-      registerForm.classList.toggle('hidden', button.dataset.mode !== 'register');
-    });
-  });
-
-  loginForm.addEventListener('submit', loginUser);
-  registerForm.addEventListener('submit', registerUser);
-}
-
-function renderHomePage() {
-  const totalLikes = state.posts.reduce((sum, post) => sum + (post.likesCount || 0), 0);
-  const initials = (state.user.name || state.user.username || 'U').charAt(0).toUpperCase();
-
-  const postsHtml = state.posts.length
-    ? state.posts
-        .map((post) => {
-          const author = post.author || {};
-          const commentsHtml = (post.comments || []).length
-            ? (post.comments || [])
-                .map(
-                  (comment) => `
-                    <div class="comment-item">
-                      <strong>${escapeHtml(comment.author?.username || 'Utilisateur')}</strong>
-                      <span>${escapeHtml(comment.text || '')}</span>
-                    </div>
-                  `
-                )
-                .join('')
-            : '<div class="comment-item"><strong>Baraza</strong><span>Aucun commentaire pour le moment.</span></div>';
-
-          return `
-            <article class="post-card">
-              <div class="post-head">
-                <div class="mini-avatar">${escapeHtml((author.name || author.username || 'U').charAt(0).toUpperCase())}</div>
-                <div class="post-info">
-                  <div class="post-author">${escapeHtml(author.name || author.username || 'Utilisateur')}</div>
-                  <div class="post-time">${escapeHtml(formatRelativeTime(post.createdAt))}</div>
-                </div>
-              </div>
-
-              ${post.sharedFrom ? '<div class="shared-tag">Partagé</div>' : ''}
-
-              <div class="post-body">${escapeHtml(post.text || '')}</div>
-              ${post.image ? `<img class="post-image" src="${escapeHtml(post.image)}" alt="Publication de ${escapeHtml(author.name || author.username || 'utilisateur')}" />` : ''}
-
-              <div class="post-actions">
-                <button class="ghost-btn ${post.likedByMe ? 'active' : ''}" data-action="like" data-post-id="${escapeHtml(post.id)}">${post.likedByMe ? '💛 Aimé' : '🤍 Aimer'} (${post.likesCount || 0})</button>
-                <button class="ghost-btn" data-action="share" data-post-id="${escapeHtml(post.id)}">🔁 Partager (${post.sharesCount || 0})</button>
-              </div>
-
-              <div class="comment-list">${commentsHtml}</div>
-
-              <form class="comment-form" data-post-id="${escapeHtml(post.id)}">
-                <input name="comment" placeholder="Ajoutez un commentaire..." />
-                <button type="submit" class="primary-btn small">Commenter</button>
-              </form>
-            </article>
-          `;
-        })
-        .join('')
-    : '<div class="empty-state">Aucune publication pour le moment. Commencez la conversation !</div>';
-
-  const searchMarkup = state.searchResults.length
-    ? state.searchResults
-        .map(
-          (user) => `
-            <div class="person-row">
-              <div class="mini-avatar">${escapeHtml((user.name || user.username || 'U').charAt(0).toUpperCase())}</div>
-              <div class="person-meta">
-                <strong>${escapeHtml(user.name || user.username)}</strong>
-                <span>@${escapeHtml(user.username)}</span>
-              </div>
-              <div class="friend-actions">
-                <button class="friend-btn" data-user-id="${escapeHtml(user.id)}">+ Ajouter</button>
-                <button class="ghost-btn" data-open-chat="${escapeHtml(user.id)}">Message</button>
-              </div>
-            </div>
-          `
-        )
-        .join('')
-    : '<div class="empty-mini">Aucun résultat trouvé.</div>';
-
-  return `
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="brand-mark">B</div>
-          <div class="topbar-title">
-            <small>Baraza</small>
-            <strong>Accueil</strong>
-          </div>
-        </div>
-
-        <div class="topbar-actions">
-          <div class="nav-pills">
-            <button class="active" data-view="home">Accueil</button>
-            <button data-view="friends">Amis</button>
-            <button data-view="messages">Messages</button>
-            <button data-view="profile">Profil</button>
-          </div>
-          <div class="searchbox">
-            <input id="userSearch" type="text" placeholder="Rechercher un utilisateur" />
-          </div>
-          <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
-        </div>
-      </header>
-
-      <div class="dashboard">
-        <aside class="left-panel">
-          <div class="panel-card profile-card">
-            <div class="profile-header">
-              <div class="avatar">${escapeHtml(initials)}</div>
-              <div>
-                <div class="profile-name">${escapeHtml(state.user.name || state.user.username)}</div>
-                <div class="profile-handle">@${escapeHtml(state.user.username)}</div>
-              </div>
-            </div>
-
-            <p class="profile-bio">${escapeHtml(state.user.bio || 'Membre actif de la communauté Baraza.')}</p>
-
-            <div class="mini-stats">
-              <div class="mini-stat">
-                <strong>${state.posts.length}</strong>
-                <span>Posts</span>
-              </div>
-              <div class="mini-stat">
-                <strong>${totalLikes}</strong>
-                <span>Likes</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="panel-card">
-            <h3 class="section-title">Découvrir</h3>
-            <div class="people-list">${searchMarkup}</div>
-          </div>
-        </aside>
-
-        <main class="center-panel">
-          <div class="panel-card composer-card">
-            <div class="composer-header">
-              <div class="mini-avatar">${escapeHtml(initials)}</div>
-              <div class="composer-title">Partager quelque chose</div>
-            </div>
-
-            <form id="composerForm">
-              <textarea name="text" placeholder="Exprimez-vous... idée, pensée, photo, moment"></textarea>
-              <input type="url" name="image" placeholder="Image URL optionnelle (https://...)" />
-
-              ${state.pendingImage ? `<img class="upload-preview" src="${escapeHtml(state.pendingImage)}" alt="Preview" />` : ''}
-
-              <div class="composer-tools">
-                <label class="upload-label">
-                  <input id="imageUpload" type="file" accept="image/*" />
-                  Ajouter une photo
-                </label>
-                <button type="submit" class="primary-btn">Publier</button>
-              </div>
-            </form>
-          </div>
-
-          <div class="feed-wrap">${postsHtml}</div>
-        </main>
-
-        <aside class="right-panel">
-          <div class="panel-card">
-            <h3 class="section-title">À la une</h3>
-            <ul class="trend-list">
-              <li><span>#Innovation</span><strong>1.2K</strong></li>
-              <li><span>#Culture</span><strong>980</strong></li>
-              <li><span>#Entrepreneuriat</span><strong>820</strong></li>
-              <li><span>#Design</span><strong>760</strong></li>
-            </ul>
-          </div>
-
-          <div class="panel-card">
-            <h3 class="section-title">Notifications</h3>
-            <div class="notification-item">
-              <strong>Baraza</strong>
-              <span>Votre prochain post peut inspirer toute une communauté.</span>
-            </div>
-            <div class="notification-item">
-              <strong>Suivi</strong>
-              <span>Des personnes intéressées par vos idées vous suivent.</span>
-            </div>
-          </div>
-        </aside>
-      </div>
-    </div>
-  `;
-}
-
-function renderFriendsPage() {
-  const initials = (state.user.name || state.user.username || 'U').charAt(0).toUpperCase();
-
-  const friendList = state.friends.length
-    ? state.friends
-        .map(
-          (friend) => `
-            <div class="friend-card">
-              <div class="friend-meta">
-                <div class="mini-avatar">${escapeHtml((friend.name || friend.username || 'U').charAt(0).toUpperCase())}</div>
-                <div>
-                  <strong>${escapeHtml(friend.name || friend.username)}</strong>
-                  <div class="profile-handle">@${escapeHtml(friend.username)}</div>
-                </div>
-              </div>
-              <div class="friend-actions">
-                <button class="ghost-btn" data-open-chat="${escapeHtml(friend.id)}">Message</button>
-                <button class="ghost-btn" data-remove-friend="${escapeHtml(friend.id)}">Supprimer</button>
-              </div>
-            </div>
-          `
-        )
-        .join('')
-    : '<div class="empty-state">Vous n’avez pas encore d’amis. Recherchez des personnes autour de vous.</div>';
-
-  const requestsMarkup = state.friendRequests.length
-    ? state.friendRequests
-        .map(
-          (user) => `
-            <div class="friend-card">
-              <div class="friend-meta">
-                <div class="mini-avatar">${escapeHtml((user.name || user.username || 'U').charAt(0).toUpperCase())}</div>
-                <div>
-                  <strong>${escapeHtml(user.name || user.username)}</strong>
-                  <div class="profile-handle">@${escapeHtml(user.username)}</div>
-                </div>
-              </div>
-              <div class="friend-actions">
-                <button class="primary-btn small" data-accept-friend="${escapeHtml(user.id)}">Accepter</button>
-                <button class="ghost-btn" data-open-chat="${escapeHtml(user.id)}">Message</button>
-              </div>
-            </div>
-          `
-        )
-        .join('')
-    : '<div class="empty-mini">Aucune demande d’amis en attente.</div>';
-
-  return `
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="brand-mark">B</div>
-          <div class="topbar-title">
-            <small>Baraza</small>
-            <strong>Amis</strong>
-          </div>
-        </div>
-
-        <div class="topbar-actions">
-          <div class="nav-pills">
-            <button data-view="home">Accueil</button>
-            <button class="active" data-view="friends">Amis</button>
-            <button data-view="messages">Messages</button>
-            <button data-view="profile">Profil</button>
-          </div>
-          <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
-        </div>
-      </header>
-
-      <div class="friends-layout">
-        <div class="panel-card">
-          <h3 class="section-title">Mes amis</h3>
-          <div class="friend-list">${friendList}</div>
-        </div>
-
-        <div class="panel-card">
-          <h3 class="section-title">Demandes</h3>
-          ${requestsMarkup}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function renderMessagesPage() {
-  const friends = state.friends || [];
-  const activeFriend = friends.find((friend) => friend.id === state.chatWithUserId) || friends[0] || null;
-
-  if (state.chatWithUserId && !activeFriend) {
-    state.chatWithUserId = null;
-  }
-
-  const friendList = friends.length
-    ? friends
-        .map(
-          (friend) => `
-            <button class="friend-card ${state.chatWithUserId === friend.id ? 'selected' : ''}" data-open-chat="${escapeHtml(friend.id)}" type="button">
-              <div class="friend-meta">
-                <div class="mini-avatar">${escapeHtml((friend.name || friend.username || 'U').charAt(0).toUpperCase())}</div>
-                <div>
-                  <strong>${escapeHtml(friend.name || friend.username)}</strong>
-                  <div class="profile-handle">@${escapeHtml(friend.username)}</div>
-                </div>
-              </div>
-            </button>
-          `
-        )
-        .join('')
-    : '<div class="empty-state">Aucun ami disponible pour le chat.</div>';
-
-  const chatMessages = state.messages.length
-    ? state.messages
-        .map((msg) => {
-          const isMine = msg.from === state.user.id;
-          return `
-            <div class="chat-message ${isMine ? 'mine' : 'other'}">
-              <div class="chat-bubble">${escapeHtml(msg.text || '')}</div>
-            </div>
-          `;
-        })
-        .join('')
-    : '<div class="empty-state">Aucune conversation pour le moment.</div>';
-
-  const activeFriendName = activeFriend ? activeFriend.name || activeFriend.username : 'Sélectionner un ami';
-
-  return `
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="brand-mark">B</div>
-          <div class="topbar-title">
-            <small>Baraza</small>
-            <strong>Messages</strong>
-          </div>
-        </div>
-
-        <div class="topbar-actions">
-          <div class="nav-pills">
-            <button data-view="home">Accueil</button>
-            <button data-view="friends">Amis</button>
-            <button class="active" data-view="messages">Messages</button>
-            <button data-view="profile">Profil</button>
-          </div>
-          <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
-        </div>
-      </header>
-
-      <div class="messages-layout">
-        <div class="panel-card">
-          <h3 class="section-title">Conversations</h3>
-          <div class="chat-list">${friendList}</div>
-        </div>
-
-        <div class="panel-card chat-panel">
-          <h3 class="section-title">${escapeHtml(activeFriendName)}</h3>
-          <div class="chat-thread">${chatMessages}</div>
-
-          <form id="messageForm" class="message-form">
-            <input name="message" type="text" placeholder="Écrire un message..." ${activeFriend ? '' : 'disabled'} />
-            <button class="primary-btn" type="submit" ${activeFriend ? '' : 'disabled'}>Envoyer</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function renderProfilePage() {
-  const initials = (state.user.name || state.user.username || 'U').charAt(0).toUpperCase();
-
-  return `
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="brand-mark">B</div>
-          <div class="topbar-title">
-            <small>Baraza</small>
-            <strong>Profil</strong>
-          </div>
-        </div>
-
-        <div class="topbar-actions">
-          <div class="nav-pills">
-            <button data-view="home">Accueil</button>
-            <button data-view="friends">Amis</button>
-            <button data-view="messages">Messages</button>
-            <button class="active" data-view="profile">Profil</button>
-          </div>
-          <button class="primary-btn small" id="logoutBtn">Déconnexion</button>
-        </div>
-      </header>
-
-      <div class="profile-layout">
-        <div class="panel-card profile-summary">
-          <div class="profile-header">
-            <div class="avatar">${escapeHtml(initials)}</div>
-            <div>
-              <div class="profile-name">${escapeHtml(state.user.name || state.user.username)}</div>
-              <div class="profile-handle">@${escapeHtml(state.user.username)}</div>
-            </div>
-          </div>
-
-          <p class="profile-bio">${escapeHtml(state.user.bio || 'Aucune bio pour le moment.')}</p>
-
-          <div class="profile-summary-grid">
-            <div class="summary-box">
-              <strong>${state.posts.length}</strong>
-              <span>Publications</span>
-            </div>
-            <div class="summary-box">
-              <strong>${state.friends.length}</strong>
-              <span>Amis</span>
-            </div>
-            <div class="summary-box">
-              <strong>${state.friendRequests.length}</strong>
-              <span>Demandes</span>
-            </div>
-            <div class="summary-box">
-              <strong>${state.posts.reduce((sum, post) => sum + (post.likesCount || 0), 0)}</strong>
-              <span>Likes</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel-card">
-          <h3 class="section-title">Modifier mon profil</h3>
-          <form id="profileForm">
-            <input name="name" type="text" value="${escapeHtml(state.user.name || '')}" placeholder="Nom complet" />
-            <textarea name="bio" placeholder="Biographie">${escapeHtml(state.user.bio || '')}</textarea>
-            <button type="submit" class="primary-btn">Enregistrer</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function render() {
-  if (!state.user || !state.token) {
-    renderAuth();
-    return;
-  }
-
-  if (state.currentView === 'friends') {
-    app.innerHTML = renderFriendsPage();
-  } else if (state.currentView === 'messages') {
-    app.innerHTML = renderMessagesPage();
-  } else if (state.currentView === 'profile') {
-    app.innerHTML = renderProfilePage();
-  } else {
-    app.innerHTML = renderHomePage();
-  }
-
-  app.querySelectorAll('[data-view]').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.currentView = button.dataset.view;
-      if (state.currentView === 'messages' && !state.chatWithUserId && state.friends[0]) {
-        state.chatWithUserId = state.friends[0].id;
-      }
-      if (state.currentView === 'messages' && state.chatWithUserId) {
-        loadConversation(state.chatWithUserId);
-      }
-      render();
-    });
-  });
-
-  const logoutBtn = app.querySelector('#logoutBtn');
-  logoutBtn?.addEventListener('click', () => {
-    localStorage.removeItem('barazaToken');
-    state.token = '';
-    state.user = null;
-    state.posts = [];
-    state.friends = [];
-    state.friendRequests = [];
-    state.searchResults = [];
-    state.pendingImage = '';
-    state.currentView = 'home';
-    state.chatWithUserId = null;
-    state.messages = [];
-    render();
-  });
-
-  const userSearch = app.querySelector('#userSearch');
-  userSearch?.addEventListener('input', async (event) => {
-    await searchUsers(event.target.value);
-    render();
-  });
-
-  app.querySelector('#composerForm')?.addEventListener('submit', publishPost);
-  app.querySelector('#profileForm')?.addEventListener('submit', saveProfile);
-  app.querySelector('#messageForm')?.addEventListener('submit', sendDirectMessage);
-
-  app.querySelector('#imageUpload')?.addEventListener('change', async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      state.pendingImage = String(reader.result || '');
-      render();
+    ensureDataFile();
+    const raw = fs.readFileSync(DATA_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    db = {
+      users: Array.isArray(parsed.users) ? parsed.users.map((u) => ({ ...u, role: normalizeUserRole(u.role) })) : [],
+      friends: Array.isArray(parsed.friends) ? parsed.friends : [],
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      posts: Array.isArray(parsed.posts) ? parsed.posts : [],
+      notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
+      nextId: Number(parsed.nextId) || 1
     };
-    reader.readAsDataURL(file);
-  });
-
-  app.querySelectorAll('[data-action="like"]').forEach((button) => {
-    button.addEventListener('click', () => likePost(button.dataset.postId));
-  });
-
-  app.querySelectorAll('[data-action="share"]').forEach((button) => {
-    button.addEventListener('click', () => sharePost(button.dataset.postId));
-  });
-
-  app.querySelectorAll('.comment-form').forEach((form) => {
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const comment = form.querySelector('input[name="comment"]')?.value || '';
-      if (!comment.trim()) return;
-      commentPost(form.dataset.postId, comment);
-      form.reset();
-    });
-  });
-
-  app.querySelectorAll('.friend-btn').forEach((button) => {
-    button.addEventListener('click', () => requestFriend(button.dataset.userId));
-  });
-
-  app.querySelectorAll('[data-open-chat]').forEach((button) => {
-    button.addEventListener('click', () => openChat(button.dataset.openChat));
-  });
-
-  app.querySelectorAll('[data-accept-friend]').forEach((button) => {
-    button.addEventListener('click', () => acceptFriend(button.dataset.acceptFriend));
-  });
-
-  app.querySelectorAll('[data-remove-friend]').forEach((button) => {
-    button.addEventListener('click', () => removeFriend(button.dataset.removeFriend));
-  });
+  } catch (error) {
+    console.warn('Erreur de lecture de data.json, réinitialisation du stockage local:', error.message);
+    db = { users: [], friends: [], messages: [], posts: [], notifications: [], nextId: 1 };
+    try {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+    } catch (saveError) {
+      console.warn('Impossible d’écrire le fichier de données:', saveError.message);
+    }
+  }
 }
 
-const init = async () => {
-  if (state.token) {
-    await loadMe();
-    if (!state.user) {
-      renderAuth();
-      return;
-    }
+function save() {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+  } catch (error) {
+    console.warn('Impossible de sauvegarder les données:', error.message);
   }
+}
 
-  render();
-};
+load();
+setInterval(save, 5000);
 
-window.addEventListener('storage', (event) => {
-  if (event.key === 'barazaToken') {
-    state.token = event.newValue || '';
-    if (!state.token) {
-      state.user = null;
-      state.posts = [];
-      state.friends = [];
-      state.friendRequests = [];
-      state.searchResults = [];
-      state.pendingImage = '';
-      state.currentView = 'home';
-      state.chatWithUserId = null;
-      state.messages = [];
-    }
-    init();
-  }
+const uid = () => 'u' + (db.nextId++);
+const postUid = () => 'p' + (db.nextId++);
+const commentUid = () => 'c' + (db.nextId++);
+const notificationUid = () => 'n' + (db.nextId++);
+
+const app = express();
+app.use(express.json({ limit: '20mb' }));
+app.use(express.static(__dirname, { index: false }));
+
+app.get(['/', '/index.html'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-init();
+app.get(/^\/(?!api|ws).*/, (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws' });
+const sockets = new Map();
+
+function auth(req, res, next) {
+  const h = req.headers.authorization || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'non authentifié' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    return next();
+  } catch {
+    return res.status(401).json({ error: 'session expirée' });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  const user = getUser(req.user.id);
+  if (!user || user.role !== 'admin') {
+    return res.status(403).json({ error: 'accès administrateur requis' });
+  }
+  return next();
+}
+
+function pubUser(u) {
+  if (!u) return null;
+  return {
+    id: u.id,
+    username: u.username,
+    name: u.name,
+    bio: u.bio || '',
+    avatar: u.avatar || '',
+    createdAt: u.createdAt,
+    role: normalizeUserRole(u.role)
+  };
+}
+
+function getUser(userId) {
+  return db.users.find((u) => u.id === userId) || null;
+}
+
+function getPostAuthor(post) {
+  return pubUser(getUser(post.userId));
+}
+
+function serializePost(post, currentUserId = null) {
+  const author = getPostAuthor(post);
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const comments = Array.isArray(post.comments) ? post.comments : [];
+  const shares = Array.isArray(post.shares) ? post.shares : [];
+
+  return {
+    id: post.id,
+    userId: post.userId,
+    text: post.text || '',
+    image: post.image || '',
+    createdAt: post.createdAt,
+    visibility: post.visibility || 'public',
+    author,
+    likedByMe: currentUserId ? likes.includes(currentUserId) : false,
+    likesCount: likes.length,
+    comments: comments.map((comment) => ({
+      id: comment.id,
+      userId: comment.userId,
+      text: comment.text || '',
+      createdAt: comment.createdAt,
+      author: pubUser(getUser(comment.userId))
+    })),
+    commentsCount: comments.length,
+    sharesCount: shares.length,
+    sharedFrom: post.sharedFrom || null
+  };
+}
+
+function createNotification(userId, type, message, meta = {}) {
+  if (!userId || !message) return null;
+  const notification = {
+    id: notificationUid(),
+    userId,
+    type,
+    message,
+    meta: meta || {},
+    read: false,
+    createdAt: Date.now()
+  };
+  db.notifications.push(notification);
+  save();
+
+  const ws = sockets.get(userId);
+  if (ws && ws.readyState === 1) {
+    try {
+      ws.send(JSON.stringify({ type: 'notification', notification }));
+    } catch {}
+  }
+
+  return notification;
+}
+
+function getUserNotifications(userId) {
+  return [...db.notifications]
+    .filter((n) => n.userId === userId)
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+    .slice(0, 200);
+}
+
+function sendTo(userId, obj) {
+  const ws = sockets.get(userId);
+  if (ws && ws.readyState === 1) {
+    try {
+      ws.send(JSON.stringify(obj));
+    } catch {}
+  }
+}
+
+// ---------- Auth ----------
+app.post('/api/register', async (req, res) => {
+  const { username, name, password } = req.body || {};
+  if (!username || !name || !password || password.length < 4) {
+    return res.status(400).json({ error: 'champs invalides (mot de passe ≥ 4 caractères)' });
+  }
+
+  const normalizedUsername = String(username).trim();
+  if (db.users.find((u) => u.username.toLowerCase() === normalizedUsername.toLowerCase())) {
+    return res.status(409).json({ error: "nom d'utilisateur déjà pris" });
+  }
+
+  const role =
+    process.env.ADMIN_USERNAME &&
+    normalizedUsername.toLowerCase() === String(process.env.ADMIN_USERNAME).trim().toLowerCase()
+      ? 'admin'
+      : 'user';
+
+  const user = {
+    id: uid(),
+    username: normalizedUsername,
+    name: String(name).trim(),
+    passwordHash: await bcrypt.hash(password, 10),
+    bio: '',
+    avatar: '',
+    createdAt: Date.now(),
+    role
+  };
+
+  db.users.push(user);
+  save();
+
+  createNotification(user.id, 'welcome', 'Bienvenue dans Baraza ! Votre compte a été créé avec succès.', { role });
+
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
+  return res.json({ token, user: pubUser(user) });
+});
+
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  const user = db.users.find(
+    (u) => u.username.toLowerCase() === String(username || '').trim().toLowerCase()
+  );
+
+  if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) {
+    return res.status(401).json({ error: 'identifiants incorrects' });
+  }
+
+  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
+  return res.json({ token, user: pubUser(user) });
+});
+
+// ---------- Profil ----------
+app.get('/api/me', auth, (req, res) => {
+  const u = db.users.find((x) => x.id === req.user.id);
+  if (!u) return res.status(404).json({ error: 'compte introuvable' });
+  return res.json(pubUser(u));
+});
+
+app.put('/api/me', auth, (req, res) => {
+  const u = db.users.find((x) => x.id === req.user.id);
+  if (!u) return res.status(404).json({ error: 'compte introuvable' });
+
+  const { name, bio, avatar, password } = req.body || {};
+  if (name) u.name = String(name).slice(0, 50).trim();
+  if (bio !== undefined) u.bio = String(bio).slice(0, 200);
+  if (avatar !== undefined) u.avatar = String(avatar).slice(0, 500000);
+  if (password && String(password).length >= 4) {
+    u.passwordHash = bcrypt.hashSync(String(password), 10);
+  }
+
+  save();
+  return res.json(pubUser(u));
+});
+
+app.delete('/api/me', auth, (req, res) => {
+  const id = req.user.id;
+  db.users = db.users.filter((u) => u.id !== id);
+  db.friends = db.friends.filter((f) => f.a !== id && f.b !== id);
+  db.messages = db.messages.filter((m) => m.from !== id && m.to !== id);
+  db.posts = db.posts.filter((p) => p.userId !== id);
+  db.notifications = db.notifications.filter((n) => n.userId !== id);
+  save();
+
+  const ws = sockets.get(id);
+  if (ws) try { ws.close(); } catch {}
+  return res.json({ ok: true });
+});
+
+// ---------- Recherche utilisateurs ----------
+app.get('/api/users/search', auth, (req, res) => {
+  const q = String(req.query.q || '').toLowerCase().trim();
+  if (!q) return res.json([]);
+
+  const results = db.users
+    .filter((u) => u.id !== req.user.id && (u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)))
+    .slice(0, 20)
+    .map(pubUser);
+
+  return res.json(results);
+});
+
+// ---------- Amis ----------
+function friendRow(a, b) {
+  return db.friends.find((f) => (f.a === a && f.b === b) || (f.a === b && f.b === a));
+}
+
+app.get('/api/friends', auth, (req, res) => {
+  const id = req.user.id;
+  const list = db.friends
+    .filter((f) => (f.a === id || f.b === id) && f.status === 'accepted')
+    .map((f) => {
+      const fid = f.a === id ? f.b : f.a;
+      const u = db.users.find((x) => x.id === fid);
+      return u ? pubUser(u) : null;
+    })
+    .filter(Boolean);
+
+  return res.json(list);
+});
+
+app.get('/api/friends/requests', auth, (req, res) => {
+  const id = req.user.id;
+  const reqs = db.friends
+    .filter((f) => f.b === id && f.status === 'pending')
+    .map((f) => {
+      const u = db.users.find((x) => x.id === f.a);
+      return u ? pubUser(u) : null;
+    })
+    .filter(Boolean);
+
+  return res.json(reqs);
+});
+
+app.post('/api/friends/request', auth, (req, res) => {
+  const { userId } = req.body || {};
+  const me = req.user.id;
+
+  if (!userId || userId === me) return res.status(400).json({ error: 'invalide' });
+  if (!db.users.find((u) => u.id === userId)) return res.status(404).json({ error: 'utilisateur introuvable' });
+  if (friendRow(me, userId)) return res.status(409).json({ error: 'déjà ami ou demande en cours' });
+
+  db.friends.push({ a: me, b: userId, status: 'pending' });
+  save();
+
+  createNotification(userId, 'friend-request', 'Nouvelle demande d’amis reçue.', { fromUserId: me });
+  sendTo(userId, { type: 'friend-request', from: pubUser(db.users.find((u) => u.id === me)) });
+
+  return res.json({ ok: true });
+});
+
+app.post('/api/friends/accept', auth, (req, res) => {
+  const { userId } = req.body || {};
+  const row = friendRow(req.user.id, userId);
+
+  if (!row || row.status !== 'pending') return res.status(404).json({ error: 'demande introuvable' });
+
+  row.status = 'accepted';
+  save();
+
+  createNotification(userId, 'friend-accepted', 'Votre demande d’amis a été acceptée.', { fromUserId: req.user.id });
+  sendTo(userId, { type: 'friend-accepted', from: pubUser(db.users.find((u) => u.id === req.user.id)) });
+
+  return res.json({ ok: true });
+});
+
+app.post('/api/friends/remove', auth, (req, res) => {
+  const { userId } = req.body || {};
+  db.friends = db.friends.filter(
+    (f) => !((f.a === req.user.id && f.b === userId) || (f.a === userId && f.b === req.user.id))
+  );
+  save();
+  return res.json({ ok: true });
+});
+
+// ---------- Messages ----------
+app.get('/api/messages/:friendId', auth, (req, res) => {
+  const me = req.user.id;
+  const fid = req.params.friendId;
+  const row = friendRow(me, fid);
+
+  if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
+
+  const msgs = db.messages
+    .filter((m) => (m.from === me && m.to === fid) || (m.from === fid && m.to === me))
+    .slice(-100);
+
+  return res.json(msgs);
+});
+
+app.post('/api/messages', auth, (req, res) => {
+  const me = req.user.id;
+  const { toUserId, type, text, audio, image } = req.body || {};
+  const row = friendRow(me, toUserId);
+
+  if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
+
+  const msg = {
+    id: 'm' + (db.nextId++),
+    from: me,
+    to: toUserId,
+    type: type || 'text',
+    text: text ? String(text).slice(0, 2000) : '',
+    audio: audio ? String(audio).slice(0, 500000) : '',
+    image: image ? String(image).slice(0, 500000) : '',
+    createdAt: Date.now()
+  };
+
+  db.messages.push(msg);
+  save();
+
+  createNotification(toUserId, 'message', 'Vous avez un nouveau message.', { fromUserId: me, messageId: msg.id });
+  sendTo(toUserId, { type: 'message', message: msg });
+  return res.json(msg);
+});
+
+// ---------- Baraza / Feed ----------
+app.get('/api/posts', auth, (req, res) => {
+  const posts = [...db.posts]
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+    .map((post) => serializePost(post, req.user.id));
+
+  return res.json(posts);
+});
+
+app.post('/api/posts', auth, (req, res) => {
+  const { text, image } = req.body || {};
+  const cleanText = String(text || '').trim();
+  const cleanImage = String(image || '').trim();
+
+  if (!cleanText && !cleanImage) {
+    return res.status(400).json({ error: 'ajoutez un texte ou une photo' });
+  }
+
+  const post = {
+    id: postUid(),
+    userId: req.user.id,
+    text: cleanText.slice(0, 2500),
+    image: cleanImage.slice(0, 500000),
+    createdAt: Date.now(),
+    visibility: 'public',
+    likes: [],
+    shares: [],
+    comments: []
+  };
+
+  db.posts.push(post);
+  save();
+  return res.json(serializePost(post, req.user.id));
+});
+
+app.post('/api/posts/:postId/comment', auth, (req, res) => {
+  const { text } = req.body || {};
+  const cleanText = String(text || '').trim();
+  if (!cleanText) return res.status(400).json({ error: 'le commentaire est vide' });
+
+  const post = db.posts.find((p) => p.id === req.params.postId);
+  if (!post) return res.status(404).json({ error: 'publication introuvable' });
+
+  post.comments = Array.isArray(post.comments) ? post.comments : [];
+  const comment = {
+    id: commentUid(),
+    userId: req.user.id,
+    text: cleanText.slice(0, 500),
+    createdAt: Date.now()
+  };
+  post.comments.push(comment);
+  save();
+
+  if (post.userId !== req.user.id) {
+    createNotification(post.userId, 'post-comment', 'Quelqu’un a commenté votre publication.', { postId: post.id, byUserId: req.user.id });
+  }
+
+  return res.json(serializePost(post, req.user.id));
+});
+
+app.post('/api/posts/:postId/like', auth, (req, res) => {
+  const post = db.posts.find((p) => p.id === req.params.postId);
+  if (!post) return res.status(404).json({ error: 'publication introuvable' });
+
+  post.likes = Array.isArray(post.likes) ? post.likes : [];
+  const idx = post.likes.indexOf(req.user.id);
+  if (idx >= 0) {
+    post.likes.splice(idx, 1);
+  } else {
+    post.likes.push(req.user.id);
+    if (post.userId !== req.user.id) {
+      createNotification(post.userId, 'post-like', 'Quelqu’un a aimé votre publication.', { postId: post.id, byUserId: req.user.id });
+    }
+  }
+  save();
+
+  return res.json(serializePost(post, req.user.id));
+});
+
+app.post('/api/posts/:postId/share', auth, (req, res) => {
+  const sourcePost = db.posts.find((p) => p.id === req.params.postId);
+  if (!sourcePost) return res.status(404).json({ error: 'publication introuvable' });
+
+  const share = {
+    id: postUid(),
+    userId: req.user.id,
+    text: sourcePost.text || '',
+    image: sourcePost.image || '',
+    createdAt: Date.now(),
+    visibility: 'public',
+    likes: [],
+    shares: [],
+    comments: [],
+    sharedFrom: {
+      id: sourcePost.id,
+      text: sourcePost.text || '',
+      image: sourcePost.image || '',
+      author: pubUser(getUser(sourcePost.userId))
+    }
+  };
+
+  db.posts.push(share);
+  save();
+
+  if (sourcePost.userId !== req.user.id) {
+    createNotification(sourcePost.userId, 'post-share', 'Quelqu’un a partagé votre publication.', { postId: sourcePost.id, byUserId: req.user.id });
+  }
+
+  return res.json(serializePost(share, req.user.id));
+});
+
+app.get('/api/notifications', auth, (req, res) => {
+  const items = getUserNotifications(req.user.id).map((n) => ({
+    ...n,
+    userId: req.user.id
+  }));
+  return res.json(items);
+});
+
+app.post('/api/notifications/:notificationId/read', auth, (req, res) => {
+  const notification = db.notifications.find((n) => n.id === req.params.notificationId && n.userId === req.user.id);
+  if (!notification) return res.status(404).json({ error: 'notification introuvable' });
+  notification.read = true;
+  save();
+  return res.json({ ok: true, notification });
+});
+
+app.get('/api/admin/summary', auth, requireAdmin, (req, res) => {
+  const totalUsers = db.users.length;
+  const totalPosts = db.posts.length;
+  const totalFriends = db.friends.length;
+  const totalMessages = db.messages.length;
+  const admins = db.users.filter((u) => normalizeUserRole(u.role) === 'admin').length;
+
+  return res.json({
+    totalUsers,
+    totalPosts,
+    totalFriends,
+    totalMessages,
+    admins,
+    lastUpdated: Date.now()
+  });
+});
+
+app.get('/api/admin/users', auth, requireAdmin, (req, res) => {
+  return res.json(db.users.map(pubUser));
+});
+
+app.post('/api/admin/users/:userId/role', auth, requireAdmin, (req, res) => {
+  const { role } = req.body || {};
+  const target = db.users.find((u) => u.id === req.params.userId);
+  if (!target) return res.status(404).json({ error: 'utilisateur introuvable' });
+
+  const nextRole = normalizeUserRole(role);
+  if (!['user', 'admin'].includes(nextRole)) {
+    return res.status(400).json({ error: 'rôle invalide' });
+  }
+
+  target.role = nextRole;
+  save();
+
+  createNotification(target.id, 'role-updated', `Votre accès a été mis à jour : ${nextRole === 'admin' ? 'administrateur' : 'utilisateur'}.`, { role: nextRole });
+
+  return res.json(pubUser(target));
+});
+
+app.get('/api/hello', (req, res) => {
+  res.json({
+    message: '✅ BARAZANI Server is running!',
+    time: new Date().toISOString()
+  });
+});
+
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Route introuvable' });
+  }
+  return res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// ---------- WebSocket ----------
+wss.on('connection', (ws, req) => {
+  const token = new URL(req.url, 'http://x').searchParams.get('token');
+  let user;
+  try {
+    user = jwt.verify(token, JWT_SECRET);
+  } catch {
+    ws.close();
+    return;
+  }
+
+  sockets.set(user.id, ws);
+  ws.on('close', () => {
+    if (sockets.get(user.id) === ws) sockets.delete(user.id);
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`BARAZANI Online - listening on http://0.0.0.0:${PORT}`);
+});
+

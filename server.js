@@ -1,491 +1,963 @@
-import express from 'express';
-import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
-import fs from 'fs';
-import http from 'http';
-import path from 'path';
-import { fileURLToPath } from 'url';
+* {
+  box-sizing: border-box;
+}
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const JWT_SECRET = process.env.JWT_SECRET || 'une_chaine_très_longue_et_aleatoire';
-const PORT = process.env.PORT || 10000;
-const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'data.json');
+:root {
+  --bg-1: #06121a;
+  --bg-2: #0d1f2a;
+  --bg-3: #142d3c;
+  --panel: rgba(10, 20, 30, 0.76);
+  --panel-strong: rgba(12, 25, 36, 0.93);
+  --panel-soft: rgba(18, 34, 48, 0.8);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --gold: #f4c867;
+  --gold-strong: #e0a92a;
+  --text: #edf5ff;
+  --muted: #a9bbca;
+  --danger: #ff6b6b;
+  --success: #4ade80;
+  --shadow: 0 22px 80px rgba(1, 5, 12, 0.45);
+  --radius: 22px;
+}
 
-let db = {
-  users: [],
-  friends: [],
-  messages: [],
-  posts: [],
-  nextId: 1
-};
+html, body {
+  margin: 0;
+  min-height: 100%;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(244, 200, 103, 0.12), transparent 25%),
+    linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 35%, var(--bg-3) 100%);
+  color: var(--text);
+}
 
-function ensureDataFile() {
-  try {
-    if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify({ users: [], friends: [], messages: [], posts: [], nextId: 1 }, null, 2)
-      );
-    }
-  } catch (error) {
-    console.warn('Impossible de créer data.json:', error.message);
+body {
+  min-height: 100vh;
+}
+
+button, input, textarea, select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+input, textarea, select {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: rgba(10, 20, 30, 0.7);
+  color: var(--text);
+  border-radius: 14px;
+  outline: none;
+  transition: 0.18s ease;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #93a5b7;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: rgba(244, 200, 103, 0.6);
+  box-shadow: 0 0 0 3px rgba(244, 200, 103, 0.12);
+}
+
+.hidden {
+  display: none !important;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.auth-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.auth-card {
+  width: min(540px, 100%);
+  background: rgba(9, 18, 27, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 32px;
+  box-shadow: var(--shadow);
+  padding: 28px 24px;
+  backdrop-filter: blur(14px);
+}
+
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.brand-mark {
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  font-size: 1.5rem;
+  background: linear-gradient(135deg, var(--gold), var(--gold-strong));
+  color: #0d1a2b;
+  box-shadow: 0 14px 28px rgba(244, 200, 103, 0.2);
+}
+
+.brand-kicker {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+
+.brand-lockup h1 {
+  margin: 4px 0 0;
+  font-size: clamp(1.8rem, 5vw, 2.6rem);
+  letter-spacing: 0.05em;
+  color: var(--gold);
+}
+
+.auth-panel {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 18px;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  padding: 6px;
+  border-radius: 14px;
+  margin-bottom: 18px;
+}
+
+.auth-tabs button {
+  flex: 1;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  padding: 12px 10px;
+  font-weight: 800;
+}
+
+.auth-tabs button.active {
+  background: linear-gradient(135deg, var(--gold), var(--gold-strong));
+  color: #122238;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-form input {
+  padding: 13px 14px;
+}
+
+.form-error {
+  min-height: 18px;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.primary-btn, .ghost-btn, .social-btn, .chip-btn {
+  border: none;
+  border-radius: 14px;
+  padding: 11px 16px;
+  font-weight: 700;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.primary-btn {
+  background: linear-gradient(135deg, var(--gold), var(--gold-strong));
+  color: #102236;
+}
+
+.primary-btn.small {
+  padding: 9px 12px;
+  font-size: 0.8rem;
+}
+
+.primary-btn.wide {
+  width: 100%;
+}
+
+.primary-btn:hover, .ghost-btn:hover, .social-btn:hover, .chip-btn:hover {
+  transform: translateY(-1px);
+}
+
+.app-shell {
+  width: min(1400px, 100%);
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 24px 18px 36px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background: rgba(9, 17, 24, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  backdrop-filter: blur(12px);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.topbar-title {
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar-title small {
+  color: var(--muted);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+}
+
+.topbar-title strong {
+  font-size: 1.1rem;
+  color: var(--gold);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.nav-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 6px;
+}
+
+.nav-pills button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
+.nav-pills button.active {
+  background: rgba(244, 200, 103, 0.12);
+  color: var(--gold);
+  border: 1px solid rgba(244, 200, 103, 0.18);
+}
+
+.searchbox {
+  min-width: min(330px, 38vw);
+}
+
+.searchbox input {
+  padding: 11px 13px;
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 280px;
+  gap: 22px;
+  margin-top: 24px;
+}
+
+.left-panel, .center-panel, .right-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.panel-card {
+  background: rgba(10, 20, 30, 0.76);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  backdrop-filter: blur(10px);
+}
+
+.profile-card {
+  padding: 18px;
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.avatar, .mini-avatar {
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  background: linear-gradient(135deg, #f4c867, #b27a17);
+  color: #0a1728;
+}
+
+.mini-avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 0.9rem;
+}
+
+.profile-name {
+  font-size: 1.03rem;
+  font-weight: 800;
+}
+
+.profile-handle {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.profile-bio {
+  margin: 16px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.mini-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.mini-stat {
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  text-align: center;
+  padding: 12px 10px;
+}
+
+.mini-stat strong {
+  display: block;
+  color: var(--gold);
+  font-size: 1.3rem;
+}
+
+.mini-stat span {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.section-title {
+  margin: 0 0 12px;
+  font-size: 0.76rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.people-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.person-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 8px;
+}
+
+.person-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.person-meta strong,
+.person-meta span {
+  display: block;
+}
+
+.person-meta span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.friend-btn, .ghost-btn, .chip-btn, .social-btn {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-weight: 700;
+}
+
+.friend-btn {
+  background: rgba(244, 200, 103, 0.12);
+  color: var(--gold);
+  border-color: rgba(244, 200, 103, 0.2);
+}
+
+.empty-mini,
+.empty-state {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.composer-card {
+  padding: 18px;
+}
+
+.composer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.composer-title {
+  font-weight: 800;
+}
+
+#composerForm, #profileForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#composerForm textarea {
+  min-height: 120px;
+  resize: vertical;
+  padding: 14px 15px;
+}
+
+#composerForm input[type='url'] {
+  padding: 12px 14px;
+}
+
+.composer-tools {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.upload-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.upload-label input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.upload-preview {
+  width: 100%;
+  max-height: 260px;
+  object-fit: cover;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+}
+
+.feed-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.post-card {
+  background: rgba(11, 23, 33, 0.8);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 18px;
+  box-shadow: 0 18px 40px rgba(1, 6, 12, 0.3);
+}
+
+.post-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.post-info {
+  min-width: 0;
+}
+
+.post-author {
+  font-weight: 800;
+}
+
+.post-time {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-top: 3px;
+}
+
+.shared-tag {
+  display: inline-flex;
+  margin-top: 16px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  background: rgba(74, 222, 128, 0.1);
+  color: var(--success);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.post-body {
+  margin-top: 16px;
+  color: var(--text);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.post-image {
+  width: 100%;
+  max-height: 420px;
+  object-fit: cover;
+  border-radius: 18px;
+  margin-top: 16px;
+  border: 1px solid var(--line);
+}
+
+.post-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.ghost-btn {
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.ghost-btn.active {
+  background: rgba(244, 200, 103, 0.12);
+  color: var(--gold);
+  border-color: rgba(244, 200, 103, 0.2);
+}
+
+.comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.comment-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.comment-item strong {
+  color: var(--gold);
+}
+
+.comment-item span {
+  display: block;
+  margin-top: 5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.comment-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.comment-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.trend-list, .notification-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trend-list li,
+.notification-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.trend-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.trend-list span {
+  color: var(--text);
+}
+
+.trend-list strong {
+  font-size: 0.78rem;
+  color: var(--gold);
+}
+
+.notification-item strong {
+  display: block;
+  color: var(--gold);
+  font-size: 0.9rem;
+}
+
+.notification-item span {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.notifications-panel {
+  margin-top: 24px;
+}
+
+.notification-entry {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.notification-entry.unread {
+  border-color: rgba(244, 200, 103, 0.25);
+  background: rgba(244, 200, 103, 0.05);
+}
+
+.notification-title {
+  color: var(--gold);
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.notification-message {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.notification-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.friends-layout {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 18px;
+}
+
+.friend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.friend-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px;
+}
+
+.friend-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.friend-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profile-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.profile-summary {
+  padding: 18px;
+}
+
+.profile-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.summary-box {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 12px;
+}
+
+.summary-box strong {
+  display: block;
+  color: var(--gold);
+  font-size: 1.4rem;
+}
+
+.summary-box span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+#profileForm input,
+#profileForm textarea {
+  padding: 12px 14px;
+}
+
+#profileForm textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.admin-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-user-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px;
+}
+
+.admin-user-row strong {
+  display: block;
+}
+
+.admin-user-row span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.admin-user-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-user-actions select {
+  min-width: 140px;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.messages-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
+}
+
+.chat-thread {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 4px;
+}
+
+.chat-message {
+  display: flex;
+}
+
+.chat-message.mine {
+  justify-content: flex-end;
+}
+
+.chat-bubble {
+  max-width: 75%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 12px;
+  line-height: 1.5;
+}
+
+.chat-message.mine .chat-bubble {
+  background: rgba(244, 200, 103, 0.12);
+  border-color: rgba(244, 200, 103, 0.2);
+}
+
+.message-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.message-form input {
+  flex: 1;
+  padding: 12px 14px;
+}
+
+@media (max-width: 1080px) {
+  .dashboard,
+  .messages-layout,
+  .friends-layout,
+  .profile-layout,
+  .admin-grid {
+    grid-template-columns: 1fr;
   }
 }
 
-function load() {
-  try {
-    ensureDataFile();
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    db = {
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-      friends: Array.isArray(parsed.friends) ? parsed.friends : [],
-      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-      posts: Array.isArray(parsed.posts) ? parsed.posts : [],
-      nextId: Number(parsed.nextId) || 1
-    };
-  } catch (error) {
-    console.warn('Erreur de lecture de data.json, réinitialisation du stockage local:', error.message);
-    db = { users: [], friends: [], messages: [], posts: [], nextId: 1 };
-    try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
-    } catch (saveError) {
-      console.warn('Impossible d’écrire le fichier de données:', saveError.message);
-    }
+@media (max-width: 760px) {
+  .app-shell {
+    padding: 16px 12px 26px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .nav-pills {
+    width: 100%;
+    justify-content: space-between;
+    overflow-x: auto;
+  }
+
+  .searchbox {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .composer-tools,
+  .comment-form,
+  .friend-card,
+  .notification-entry,
+  .admin-user-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .friend-actions,
+  .admin-user-actions {
+    width: 100%;
+  }
+
+  .friend-actions button,
+  .admin-user-actions button,
+  .admin-user-actions select {
+    flex: 1;
+    width: 100%;
   }
 }
 
-function save() {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
-  } catch (error) {
-    console.warn('Impossible de sauvegarder les données:', error.message);
-  }
-}
-
-load();
-setInterval(save, 5000);
-
-const uid = () => 'u' + (db.nextId++);
-const postUid = () => 'p' + (db.nextId++);
-const commentUid = () => 'c' + (db.nextId++);
-
-const app = express();
-app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname, { index: false }));
-
-app.get(['/', '/index.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-app.get(/^\/(?!api|ws).*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
-const sockets = new Map();
-
-function auth(req, res, next) {
-  const h = req.headers.authorization || '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'non authentifié' });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    return next();
-  } catch {
-    return res.status(401).json({ error: 'session expirée' });
-  }
-}
-
-function pubUser(u) {
-  if (!u) return null;
-  return {
-    id: u.id,
-    username: u.username,
-    name: u.name,
-    bio: u.bio || '',
-    avatar: u.avatar || '',
-    createdAt: u.createdAt
-  };
-}
-
-function getUser(userId) {
-  return db.users.find((u) => u.id === userId) || null;
-}
-
-function getPostAuthor(post) {
-  return pubUser(getUser(post.userId));
-}
-
-function serializePost(post, currentUserId = null) {
-  const author = getPostAuthor(post);
-  const likes = Array.isArray(post.likes) ? post.likes : [];
-  const comments = Array.isArray(post.comments) ? post.comments : [];
-  const shares = Array.isArray(post.shares) ? post.shares : [];
-
-  return {
-    id: post.id,
-    userId: post.userId,
-    text: post.text || '',
-    image: post.image || '',
-    createdAt: post.createdAt,
-    visibility: post.visibility || 'public',
-    author,
-    likedByMe: currentUserId ? likes.includes(currentUserId) : false,
-    likesCount: likes.length,
-    comments: comments.map((comment) => ({
-      id: comment.id,
-      userId: comment.userId,
-      text: comment.text || '',
-      createdAt: comment.createdAt,
-      author: pubUser(getUser(comment.userId))
-    })),
-    commentsCount: comments.length,
-    sharesCount: shares.length,
-    sharedFrom: post.sharedFrom || null
-  };
-}
-
-function sendTo(userId, obj) {
-  const ws = sockets.get(userId);
-  if (ws && ws.readyState === 1) {
-    try {
-      ws.send(JSON.stringify(obj));
-    } catch {}
-  }
-}
-
-// ---------- Auth ----------
-app.post('/api/register', async (req, res) => {
-  const { username, name, password } = req.body || {};
-  if (!username || !name || !password || password.length < 4) {
-    return res.status(400).json({ error: 'champs invalides (mot de passe ≥ 4 caractères)' });
-  }
-
-  const normalizedUsername = String(username).trim();
-  if (db.users.find((u) => u.username.toLowerCase() === normalizedUsername.toLowerCase())) {
-    return res.status(409).json({ error: "nom d'utilisateur déjà pris" });
-  }
-
-  const user = {
-    id: uid(),
-    username: normalizedUsername,
-    name: String(name).trim(),
-    passwordHash: await bcrypt.hash(password, 10),
-    bio: '',
-    avatar: '',
-    createdAt: Date.now()
-  };
-
-  db.users.push(user);
-  save();
-
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
-  return res.json({ token, user: pubUser(user) });
-});
-
-app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body || {};
-  const user = db.users.find(
-    (u) => u.username.toLowerCase() === String(username || '').trim().toLowerCase()
-  );
-
-  if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) {
-    return res.status(401).json({ error: 'identifiants incorrects' });
-  }
-
-  const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '365d' });
-  return res.json({ token, user: pubUser(user) });
-});
-
-// ---------- Profil ----------
-app.get('/api/me', auth, (req, res) => {
-  const u = db.users.find((x) => x.id === req.user.id);
-  if (!u) return res.status(404).json({ error: 'compte introuvable' });
-  return res.json(pubUser(u));
-});
-
-app.put('/api/me', auth, (req, res) => {
-  const u = db.users.find((x) => x.id === req.user.id);
-  if (!u) return res.status(404).json({ error: 'compte introuvable' });
-
-  const { name, bio, avatar, password } = req.body || {};
-  if (name) u.name = String(name).slice(0, 50).trim();
-  if (bio !== undefined) u.bio = String(bio).slice(0, 200);
-  if (avatar !== undefined) u.avatar = String(avatar).slice(0, 500000);
-  if (password && String(password).length >= 4) {
-    u.passwordHash = bcrypt.hashSync(String(password), 10);
-  }
-
-  save();
-  return res.json(pubUser(u));
-});
-
-app.delete('/api/me', auth, (req, res) => {
-  const id = req.user.id;
-  db.users = db.users.filter((u) => u.id !== id);
-  db.friends = db.friends.filter((f) => f.a !== id && f.b !== id);
-  db.messages = db.messages.filter((m) => m.from !== id && m.to !== id);
-  db.posts = db.posts.filter((p) => p.userId !== id);
-  save();
-
-  const ws = sockets.get(id);
-  if (ws) try { ws.close(); } catch {}
-  return res.json({ ok: true });
-});
-
-// ---------- Recherche utilisateurs ----------
-app.get('/api/users/search', auth, (req, res) => {
-  const q = String(req.query.q || '').toLowerCase().trim();
-  if (!q) return res.json([]);
-
-  const results = db.users
-    .filter((u) => u.id !== req.user.id && (u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)))
-    .slice(0, 20)
-    .map(pubUser);
-
-  return res.json(results);
-});
-
-// ---------- Amis ----------
-function friendRow(a, b) {
-  return db.friends.find((f) => (f.a === a && f.b === b) || (f.a === b && f.b === a));
-}
-
-app.get('/api/friends', auth, (req, res) => {
-  const id = req.user.id;
-  const list = db.friends
-    .filter((f) => (f.a === id || f.b === id) && f.status === 'accepted')
-    .map((f) => {
-      const fid = f.a === id ? f.b : f.a;
-      const u = db.users.find((x) => x.id === fid);
-      return u ? pubUser(u) : null;
-    })
-    .filter(Boolean);
-
-  return res.json(list);
-});
-
-app.get('/api/friends/requests', auth, (req, res) => {
-  const id = req.user.id;
-  const reqs = db.friends
-    .filter((f) => f.b === id && f.status === 'pending')
-    .map((f) => {
-      const u = db.users.find((x) => x.id === f.a);
-      return u ? pubUser(u) : null;
-    })
-    .filter(Boolean);
-
-  return res.json(reqs);
-});
-
-app.post('/api/friends/request', auth, (req, res) => {
-  const { userId } = req.body || {};
-  const me = req.user.id;
-
-  if (!userId || userId === me) return res.status(400).json({ error: 'invalide' });
-  if (!db.users.find((u) => u.id === userId)) return res.status(404).json({ error: 'utilisateur introuvable' });
-  if (friendRow(me, userId)) return res.status(409).json({ error: 'déjà ami ou demande en cours' });
-
-  db.friends.push({ a: me, b: userId, status: 'pending' });
-  save();
-  sendTo(userId, { type: 'friend-request', from: pubUser(db.users.find((u) => u.id === me)) });
-
-  return res.json({ ok: true });
-});
-
-app.post('/api/friends/accept', auth, (req, res) => {
-  const { userId } = req.body || {};
-  const row = friendRow(req.user.id, userId);
-
-  if (!row || row.status !== 'pending') return res.status(404).json({ error: 'demande introuvable' });
-
-  row.status = 'accepted';
-  save();
-  sendTo(userId, { type: 'friend-accepted', from: pubUser(db.users.find((u) => u.id === req.user.id)) });
-
-  return res.json({ ok: true });
-});
-
-app.post('/api/friends/remove', auth, (req, res) => {
-  const { userId } = req.body || {};
-  db.friends = db.friends.filter(
-    (f) => !((f.a === req.user.id && f.b === userId) || (f.a === userId && f.b === req.user.id))
-  );
-  save();
-  return res.json({ ok: true });
-});
-
-// ---------- Messages ----------
-app.get('/api/messages/:friendId', auth, (req, res) => {
-  const me = req.user.id;
-  const fid = req.params.friendId;
-  const row = friendRow(me, fid);
-
-  if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
-
-  const msgs = db.messages
-    .filter((m) => (m.from === me && m.to === fid) || (m.from === fid && m.to === me))
-    .slice(-100);
-
-  return res.json(msgs);
-});
-
-app.post('/api/messages', auth, (req, res) => {
-  const me = req.user.id;
-  const { toUserId, type, text, audio, image } = req.body || {};
-  const row = friendRow(me, toUserId);
-
-  if (!row || row.status !== 'accepted') return res.status(403).json({ error: 'pas ami' });
-
-  const msg = {
-    id: 'm' + (db.nextId++),
-    from: me,
-    to: toUserId,
-    type: type || 'text',
-    text: text ? String(text).slice(0, 2000) : '',
-    audio: audio ? String(audio).slice(0, 500000) : '',
-    image: image ? String(image).slice(0, 500000) : '',
-    createdAt: Date.now()
-  };
-
-  db.messages.push(msg);
-  save();
-  sendTo(toUserId, { type: 'message', message: msg });
-  return res.json(msg);
-});
-
-// ---------- Baraza / Feed ----------
-app.get('/api/posts', auth, (req, res) => {
-  const posts = [...db.posts]
-    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
-    .map((post) => serializePost(post, req.user.id));
-
-  return res.json(posts);
-});
-
-app.post('/api/posts', auth, (req, res) => {
-  const { text, image } = req.body || {};
-  const cleanText = String(text || '').trim();
-  const cleanImage = String(image || '').trim();
-
-  if (!cleanText && !cleanImage) {
-    return res.status(400).json({ error: 'ajoutez un texte ou une photo' });
-  }
-
-  const post = {
-    id: postUid(),
-    userId: req.user.id,
-    text: cleanText.slice(0, 2500),
-    image: cleanImage.slice(0, 500000),
-    createdAt: Date.now(),
-    visibility: 'public',
-    likes: [],
-    shares: [],
-    comments: []
-  };
-
-  db.posts.push(post);
-  save();
-  return res.json(serializePost(post, req.user.id));
-});
-
-app.post('/api/posts/:postId/comment', auth, (req, res) => {
-  const { text } = req.body || {};
-  const cleanText = String(text || '').trim();
-  if (!cleanText) return res.status(400).json({ error: 'le commentaire est vide' });
-
-  const post = db.posts.find((p) => p.id === req.params.postId);
-  if (!post) return res.status(404).json({ error: 'publication introuvable' });
-
-  post.comments = Array.isArray(post.comments) ? post.comments : [];
-  post.comments.push({
-    id: commentUid(),
-    userId: req.user.id,
-    text: cleanText.slice(0, 500),
-    createdAt: Date.now()
-  });
-  save();
-
-  return res.json(serializePost(post, req.user.id));
-});
-
-app.post('/api/posts/:postId/like', auth, (req, res) => {
-  const post = db.posts.find((p) => p.id === req.params.postId);
-  if (!post) return res.status(404).json({ error: 'publication introuvable' });
-
-  post.likes = Array.isArray(post.likes) ? post.likes : [];
-  const idx = post.likes.indexOf(req.user.id);
-  if (idx >= 0) {
-    post.likes.splice(idx, 1);
-  } else {
-    post.likes.push(req.user.id);
-  }
-  save();
-
-  return res.json(serializePost(post, req.user.id));
-});
-
-app.post('/api/posts/:postId/share', auth, (req, res) => {
-  const sourcePost = db.posts.find((p) => p.id === req.params.postId);
-  if (!sourcePost) return res.status(404).json({ error: 'publication introuvable' });
-
-  const share = {
-    id: postUid(),
-    userId: req.user.id,
-    text: sourcePost.text || '',
-    image: sourcePost.image || '',
-    createdAt: Date.now(),
-    visibility: 'public',
-    likes: [],
-    shares: [],
-    comments: [],
-    sharedFrom: {
-      id: sourcePost.id,
-      text: sourcePost.text || '',
-      image: sourcePost.image || '',
-      author: pubUser(getUser(sourcePost.userId))
-    }
-  };
-
-  db.posts.push(share);
-  save();
-  return res.json(serializePost(share, req.user.id));
-});
-
-app.get('/api/hello', (req, res) => {
-  res.json({
-    message: '✅ BARAZANI Server is running!',
-    time: new Date().toISOString()
-  });
-});
-
-app.use((req, res) => {
-  if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ error: 'Route introuvable' });
-  }
-  return res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// ---------- WebSocket ----------
-wss.on('connection', (ws, req) => {
-  const token = new URL(req.url, 'http://x').searchParams.get('token');
-  let user;
-  try {
-    user = jwt.verify(token, JWT_SECRET);
-  } catch {
-    ws.close();
-    return;
-  }
-
-  sockets.set(user.id, ws);
-  ws.on('close', () => {
-    if (sockets.get(user.id) === ws) sockets.delete(user.id);
-  });
-});
-
-server.listen(PORT, () => {
-  console.log(`BARAZANI Online - listening on http://0.0.0.0:${PORT}`);
-});
