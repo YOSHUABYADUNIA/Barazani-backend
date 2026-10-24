@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const JWT_SECRET = process.env.JWT_SECRET || 'mon_amour_et_mon_coeur_grace_mihigo';
+const JWT_SECRET = process.env.JWT_SECRET || 'une_chaine_très_longue_et_aleatoire';
 const PORT = process.env.PORT || 10000;
 const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'data.json');
 
